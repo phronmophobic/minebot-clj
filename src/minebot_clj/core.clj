@@ -19,6 +19,23 @@
                     DataOutputStream))
   (:gen-class))
 
+(defn chan-seq!
+  ([n ch] (chan-seq! (async/take n ch)))
+  ([ch]
+     (loop [x (<!! ch)
+            xs []]
+       (if x
+         (recur (<!! ch) (conj xs x))
+         xs))))
+
+
+(defn chan-take! [n ch]
+  (doall
+   (for [i (range n)]
+     (<!! ch))))
+
+
+
 (defmulti -write-field (fn [out field-type field-val]
                          field-type))
 
@@ -188,8 +205,9 @@
 (defn read-packet [in]
   (let [length (-read-varint in)
         _ (assert (pos? length) "bad packet length")
-        data (-read-bytearray in length)
-        [data packet-id] (parse-field :varint data)]
+        data-chan (async/to-chan (-read-bytearray in length))
+        packet-id (parse-field :varint data-chan)
+        data (chan-seq! data-chan)]
     {:length length
      :packet-id packet-id
      :data data}))
@@ -198,40 +216,34 @@
 (defmulti parse-field (fn [field-type data]
                         field-type))
 
+
+
 (defn nbyte-number [n data]
   (reduce (fn [x [b i]]
              (bit-or x (bit-shift-left (bit-and 0xFF b) (* i 8))))
            0
-           (map vector (reverse (take n data)) (range))))
+           (map vector (reverse (chan-seq! n data)) (range))))
 
 (defmethod parse-field :int
   [field-type data]
-  [(drop 4 data)
-   (let [n (nbyte-number 4 data)]
+  (let [n (nbyte-number 4 data)]
       (if (> n 0x7FFFFFFF)
         (int (+ -1 (- n 0xFFFFFFFF)))
-        n))])
+        n)))
 
 (defmethod parse-field :long
   [field-type data]
-  [(drop 8 data)
-   (nbyte-number 8 data)])
-
+  (nbyte-number 8 data))
 
 
 (defmethod parse-field :float
   [field-type data]
-  (let [[data n] (parse-field :int data)]
-    [data
-    (Float/intBitsToFloat n)]))
+  (Float/intBitsToFloat (parse-field :int data)))
 
 
 (defmethod parse-field :double
   [field-type data]
-  [(drop 8 data)
-   (Double/longBitsToDouble
-    (nbyte-number 8 data))
-   ])
+  (Double/longBitsToDouble (nbyte-number 8 data)))
 
 (defmethod parse-field :unsigned-short
   [field-type data]
@@ -239,63 +251,51 @@
 
 (defmethod parse-field :meta
   [field-type data]
-  (let [[data chunk-x] (parse-field :int data)
-        [data chunk-z] (parse-field :int data)
-        [data primary-bitmap] (parse-field :unsigned-short data)
-        [data add-bitmap] (parse-field :unsigned-short data)]
-    [data {:chunk-x chunk-x
-           :chunk-z chunk-z
-           :primary-bitmap primary-bitmap
-           :add-bitmap add-bitmap}]))
+  (let [chunk-x (parse-field :int data)
+        chunk-z (parse-field :int data)
+        primary-bitmap (parse-field :unsigned-short data)
+        add-bitmap (parse-field :unsigned-short data)]
+    {:chunk-x chunk-x
+     :chunk-z chunk-z
+     :primary-bitmap primary-bitmap
+     :add-bitmap add-bitmap}))
 
 
 (defmethod parse-field :varint
   [_ data]
   (let [f data]
-    (loop [[a & r] f t 0 i 0]
+    (loop [a (<!! f) t 0 i 0]
       (if (= 0 (bit-and (bit-not 0x7f) a))
-        [r
-         (bit-or t
-                 (bit-shift-left (bit-and 0x7F a) (* i 7)))]
-        (recur r
+        (bit-or t
+                (bit-shift-left (bit-and 0x7F a) (* i 7)))
+        (recur (<!! f)
                (bit-or t
                        (bit-shift-left (bit-and 0x7F a) (* i 7)))
-               (inc i))))
-    
-    #_(loop [[a & r] f t 0 i 0]
-      (if (= 0 (bit-and (bit-not 0x7f) a))
-        [r (bit-or (bit-shift-right t (* i 7))
-                   a)]
-        (recur r (bit-or (bit-shift-right t (* i 7))
-                         a) (inc i))))))
+               (inc i))))))
+
 
 (defmethod parse-field :string
   [field-type data]
-  (let [[data length] (parse-field :varint data)]
-    [(drop length data)
-     (String. (byte-array (take length data))
-              0 length
-              "utf-8")]))
+  (let [length (parse-field :varint data)]
+    (String. (byte-array (chan-seq! length data))
+             0 length
+             "utf-8")))
 
 (defmethod parse-field :short
   [field-type data]
-  [(drop 2 data)
-   (nbyte-number 2 data)])
+  (nbyte-number 2 data))
 
 (defmethod parse-field :byte
   [field-type data]
-  [(drop 1 data)
-   (byte (first data))])
+  (byte (<!! data)))
 
 (defmethod parse-field :unsigned-byte
   [field-type data]
-  [(drop 1 data)
-   (short (first data))])
+  (short (<!! data)))
 
 (defmethod parse-field :bool
   [field-type data]
-  [(drop 1 data)
-   (not (zero? (first data)))])
+  (not (zero? (<!! data))))
 
 (declare client-packets)
 (defn parse-packet
@@ -307,26 +307,22 @@
                                           [packet-descriptions])
            data (:data packet)
            parsed (when (= 1 (count matching-packet-descriptions))
-                    
                     (let [desc (first matching-packet-descriptions)
-                          [pname pdirection pid fields] desc]
+                          [pname pdirection pid fields] desc
+                          data-chan (async/to-chan data)]
                       (try
-                        (loop [parsed {:packet-id (:packet-id packet)
-                                       :packet-name pname
-                                       :packet-data data
-                                       :packet-direction pdirection}
-                               [field & fields] fields
-                               data data]
-                          (if (nil? field)
-                            (do
-                              (when (pos? (count data))
-                                (msg "had some left over data for " pname))
-                              parsed)
-                            (let [[field-name field-type _] field
-                                  [rest-data field-value] (parse-field field-type data)]
-                              (recur (assoc parsed field-name field-value)
-                                     fields
-                                     rest-data))))
+                        (let [parsed (reduce (fn [parsed field]
+                                               (let [[field-name field-type _] field
+                                                     field-value (parse-field field-type data-chan)]
+                                                 (assoc parsed field-name field-value)))
+                                             {:packet-id (:packet-id packet)
+                                              :packet-name pname
+                                              :packet-data data
+                                              :packet-direction pdirection}
+                                             fields)]
+                          (when (<! data-chan)
+                            (msg "had some left over data for " pname))
+                          parsed)
                         (catch Exception e
                           #_(msg "parse error" e)
                           {:packet-id (:packet-id packet)
@@ -552,7 +548,7 @@
        (let [keepalive? (and (zero? (:packet-id packet))
                              (= 5 (:length packet)))]
          (when keepalive?
-           (let [[_ keep-alive-id] (parse-field :int (:data packet))]
+           (let [keep-alive-id (parse-field :int (:data packet))]
              (>! out (keep-alive keep-alive-id))))
          (recur))))
    
@@ -646,87 +642,86 @@
     (last vals)))
 
 
-(defn parse-chunk-column [{:keys [chunk-x
+(defn parse-chunk-section [{:keys [chunk-x
                                   chunk-z
                                   primary-bitmap
                                   add-bitmap] :as meta}
+                           sky-light?
+                           data
+                           section-key]
+  (let [length (if (= :block-data section-key)
+                 (* 16 16 16)
+                 (* 16 16 8))
+        mask (if (= :block-add section-key)
+               add-bitmap
+               primary-bitmap)
+        chunks (doall
+                (for [i (range 16)
+                      :when (not (zero? (bit-and mask (bit-shift-left 1 i))))
+                      :let [chunk-data (chan-seq! length data)]
+                      :when (= :block-data section-key)
+                      :let [x-base (* chunk-x 16)
+                            z-base (* chunk-z 16)
+                            y-base (* i 16)]
+                      x-offset (range 16)
+                      z-offset (range 16)
+                      y-offset (range 16)
+                      :let [x (+ x-base x-offset)
+                            y (+ y-base y-offset)
+                            z (+ z-base z-offset)
+                            idx (+ x-offset
+                                   (* 16 (+ z-offset
+                                            (* 16 y-offset))))]]
+                  [[x y z] (nth chunk-data idx)]))]
+    (into {}  chunks)))
+
+
+(defn parse-chunk-column [meta
                           sky-light?
                           data]
   (let [section-keys (concat
                       [:block-data :block-meta :light-block]
                       (if sky-light? [:light-sky])
                       [:block-add])
-        [data chunk-column] (reduce
-                             (fn [[data sections] section-key]
-                               (let [length (if (= :block-data section-key)
-                                              (* 16 16 16)
-                                              (* 16 16 8))
-                                     mask (if (= :block-add section-key)
-                                            add-bitmap
-                                            primary-bitmap)
-                                     [data chunks] (reduce
-                                                    (fn [[data chunks] i]
-                                                      (if (zero? (bit-and mask (bit-shift-left 1 i)))
-                                                        [data chunks]
-                                                        (let [[data chunk-data] [(drop length data)
-                                                                                 (vec (take length data))]
-                                                              ch (let [x-base (* chunk-x 16)
-                                                                       z-base (* chunk-z 16)
-                                                                       y-base (* i 16)]
-                                                                   (for [x-offset (range 16)
-                                                                         y-offset (range 16)
-                                                                         z-offset (range 16)
-                                                                         :let [x (+ x-base x-offset)
-                                                                               y (+ y-base y-offset)
-                                                                               z (+ z-base z-offset)]]
-                                                                     [[x y z section-key] (nth chunk-data (+ x
-                                                                                                             (* 16 (+ z
-                                                                                                                      (* 16 y)))))]))
-                                                              chunks (reduce
-                                                                      (fn [chunks [path val]]
-                                                                        (assoc-in chunks path val))
-                                                                      chunks
-                                                                      ch)]
-                                                          [data chunks]))
-                                                      ))]
-                                 [data chunks]))
-                             [data chunks]
-                             section-keys)
-        [data biome] [(drop (* 16 16) data)
-                      (take (* 16 16) data)]
-        ;;chunk-column (assoc chunk-column :biome biome)
-        ]
-    [data chunks]))
+        chunks (doall
+                (map #(parse-chunk-section meta sky-light? data %) section-keys))
+        chunks (apply merge chunks)
+        biome-data (chan-take! (* 16 16) data)]
+    chunks))
+
 
 (defn parse-map-chunk-bulk [data]
-  (let [[data column-count] (parse-field :short data)
-        [data chunk-data-length] (parse-field :int data)
-        [data sky-light?] (parse-field :bool data)
-        [data chunk-data-compressed] [(drop chunk-data-length data)
-                                      (take chunk-data-length data)]
+  (let [column-count (parse-field :short data)
+        chunk-data-length (parse-field :int data)
+        sky-light? (parse-field :bool data)
+        chunk-data-compressed (chan-seq! chunk-data-length data)
         chunk-data (deflate chunk-data-compressed)
-        [data metas] (reduce (fn [[data metas] i]
-                               (let [[data meta] (parse-field :meta data)]
-                                 [data (conj metas meta)]))
-                             [data []]
-                             (range column-count))
-        [chunk-data chunks] (reduce (fn [[data columns] meta]
-                                       (let [[data column] (parse-chunk-column meta sky-light? data)]
-                                         [data (conj columns column)]))
-                                     [chunk-data chunks]
-                                     metas)]))
+        chunk-data-chan (async/to-chan chunk-data)
+        metas (doall
+               (map (fn [_]
+                      (parse-field :meta data))
+                    (range column-count)))
+        chunks (doall
+                (map (fn [meta]
+                       (parse-chunk-column meta sky-light? chunk-data-chan))
+                     metas))
+        chunks (apply merge chunks)]
+    chunks))
 
 
-
+(def all-chunks (atom {}))
 (defn print-packets [ch packet-descriptions ignored]
-  (go
+  (thread
    (loop []
-     (when-let [packet (<! ch)]
+     (when-let [packet (<!! ch)]
        (when-not (contains? @ignored (:packet-id packet))
          (msg (map first (get packet-descriptions (:packet-id packet))) (:packet-id packet))
          
          (when (= 0x26 (:packet-id packet))
-           (parse-map-chunk-bulk (:data packet))))
+           (try
+             (swap! all-chunks deep-merge (parse-map-chunk-bulk (async/to-chan (:data packet))))
+             (catch Exception e
+               (msg "there was an exception" e)))))
        (recur)))))
 
 (def ignored (atom #{}))
@@ -757,8 +752,8 @@
       (async/pipe cin sout)
       (async/pipe sin cout-orig)
 
-      (print-packets (async/tap sout-mult (chan)) client-packets ignored-from-server)
-      (print-packets (async/tap cout-mult (chan)) server-packets ignored)
+      (print-packets (async/tap sout-mult (chan 1000)) client-packets ignored-from-server)
+      ;; (print-packets (async/tap cout-mult (chan)) server-packets ignored)
 
       cout
       (finally
