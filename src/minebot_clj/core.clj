@@ -137,41 +137,6 @@
   (msg "finished packet channding")
   )
 
-;; (defn connect [host port & [inchan outchan]]
-;;   (let [socket (Socket. host port)
-;;         in (DataInputStream. (.getInputStream socket))
-;;         out (DataOutputStream. (.getOutputStream socket))
-;;         conn (ref {:in in :out out})]
-;;     (when inchan
-;;       (thread
-;;        (try
-;;          (while (nil? (:exit @conn))
-;;            (let [packet (read-packet conn)]
-;;              (>!! inchan packet)))
-;;          (catch Exception e
-;;            (msg "error reading packet" (str e)))
-;;          (finally
-;;            (close! inchan)))))
-;;     (when outchan
-;;       (thread
-;;        (try
-;;          (let [out (:out @conn)]
-;;            (loop []
-;;              (when-let [packet (<!! outchan)]
-;;                (-write-field out :packet packet)
-;;                (.flush (:out @conn))
-;;                (recur)))
-;;            (msg "finished writing"))
-;;          (catch Exception e
-;;            (msg "error writing packet"(str e))))
-;;        (.close (:out @conn))
-;;        (.close (:in @conn))
-;;        (close! inchan)
-;;        (close! outchan)
-;;        )
-;;     (msg "started")
-;;     conn)))
-
 (defn- -read-byte-bare [in]
   (io!
     (let [b (.readByte ^DataInputStream in)]
@@ -634,64 +599,82 @@
     (.toByteArray baos)))
 
 
-(defn deep-merge
-  "Recursively merges maps. If keys are not maps, the last value wins."
-  [& vals]
-  (if (every? map? vals)
-    (apply merge-with deep-merge vals)
-    (last vals)))
 
 
-(defn parse-chunk-section [{:keys [chunk-x
-                                  chunk-z
-                                  primary-bitmap
-                                  add-bitmap] :as meta}
-                           sky-light?
-                           data
-                           section-key]
-  (let [length (if (= :block-data section-key)
-                 (* 16 16 16)
-                 (* 16 16 8))
-        mask (if (= :block-add section-key)
-               add-bitmap
-               primary-bitmap)
-        chunks (doall
-                (for [i (range 16)
-                      :when (not (zero? (bit-and mask (bit-shift-left 1 i))))
-                      :let [chunk-data (chan-seq! length data)]
-                      :when (= :block-data section-key)
-                      :let [x-base (* chunk-x 16)
-                            z-base (* chunk-z 16)
-                            y-base (* i 16)]
-                      x-offset (range 16)
-                      z-offset (range 16)
-                      y-offset (range 16)
-                      :let [x (+ x-base x-offset)
-                            y (+ y-base y-offset)
-                            z (+ z-base z-offset)
-                            idx (+ x-offset
-                                   (* 16 (+ z-offset
-                                            (* 16 y-offset))))]]
-                  [[x y z] (nth chunk-data idx)]))]
-    (into {}  chunks)))
 
 
-(defn parse-chunk-column [meta
-                          sky-light?
-                          data]
+(defn- -get-block-from-chunk [section [x y z] data]
+  (case section
+    :block-data
+    (let [idx (+ x
+                 (* 16
+                    (+ z
+                       (* y 16))))]
+      (nth data idx))
+
+    (:block-meta :block-add :light-block :light-sky)
+    (let [r (mod (long x) 2)
+          x (long (/ (long x) 2))
+          index (fn index [x y z]
+                  (+ x
+                     (* 8
+                        (+ z
+                           (* 16 y)))))
+          i (index x y z)]
+      (bit-and 0x0F
+               (if (zero? r)
+                 (nth data i)
+                 (bit-shift-right (nth data i) 4))))
+
+    :biome
+    (nth data (+ x
+                 (* 16 z)))))
+
+
+(defn get-block [section [x y z] chunks]
+  (let [x (long x)
+        y (long y)
+        z (long z)
+        rx (mod x 16)
+        ry (mod y 16)
+        rz (mod z 16)
+        x ((if (neg? x) dec identity) (long (/ x 16)))
+        y (long (/ y 16))
+        z ((if (neg? z) dec identity) (long (/ z 16)))]
+    (or (when-let [column (get chunks [x z])]
+          (when-let [sect (get column section)]
+            (when-let [chunk (nth sect y)]
+              (msg "with something" x y z)
+              (-get-block-from-chunk section [rx ry rz] chunk))))
+        0)))
+
+
+
+(defn parse-chunk-column! [meta sky-light? data]
   (let [section-keys (concat
                       [:block-data :block-meta :light-block]
                       (if sky-light? [:light-sky])
-                      [:block-add])
-        chunks (doall
-                (map #(parse-chunk-section meta sky-light? data %) section-keys))
-        chunks (apply merge chunks)
-        biome-data (chan-take! (* 16 16) data)]
-    chunks))
-
+                      [:block-add]
+)
+        chunk-sections (transient {})]
+    (doseq [section-key section-keys
+            :let [mask (if (= :block-add section-key)
+                         (:add-bitmap meta)
+                         (:primary-bitmap meta))
+                  length (if (= :block-data section-key)
+                           (* 16 16 16)
+                           (* 16 16 8))
+                  chunk (doall
+                         (for [i (range 16)]
+                           (when (not (zero? (bit-and mask (bit-shift-left 1 i))))
+                             (chan-seq! length data))))]]
+      (assoc! chunk-sections section-key chunk))
+    (assoc! chunk-sections :biome (chan-take! (* 16 16) data))
+    (persistent! chunk-sections)))
 
 (defn parse-map-chunk-bulk [data]
-  (let [column-count (parse-field :short data)
+  (let [data (async/to-chan data)
+        column-count (parse-field :short data)
         chunk-data-length (parse-field :int data)
         sky-light? (parse-field :bool data)
         chunk-data-compressed (chan-seq! chunk-data-length data)
@@ -701,28 +684,39 @@
                (map (fn [_]
                       (parse-field :meta data))
                     (range column-count)))
-        chunks (doall
-                (map (fn [meta]
-                       (parse-chunk-column meta sky-light? chunk-data-chan))
-                     metas))
-        chunks (apply merge chunks)]
-    chunks))
+        world (transient {})]
+    (doseq [{:keys [chunk-x chunk-z] :as meta} metas
+            :let [chunks (parse-chunk-column! meta sky-light? chunk-data-chan)]]
+      (assoc! world [chunk-x chunk-z] chunks))
+
+    (persistent! world)))
 
 
 (def all-chunks (atom {}))
 (defn print-packets [ch packet-descriptions ignored]
-  (thread
-   (loop []
-     (when-let [packet (<!! ch)]
-       (when-not (contains? @ignored (:packet-id packet))
-         (msg (map first (get packet-descriptions (:packet-id packet))) (:packet-id packet))
-         
-         (when (= 0x26 (:packet-id packet))
-           (try
-             (swap! all-chunks deep-merge (parse-map-chunk-bulk (async/to-chan (:data packet))))
-             (catch Exception e
-               (msg "there was an exception" e)))))
-       (recur)))))
+  (let [switch (atom true)
+        chunk-packets (chan 1000)]
+    (go
+     (loop []
+       (when-let [packet (<! ch)]
+         (when-not (contains? @ignored (:packet-id packet))
+           (msg (map first (get packet-descriptions (:packet-id packet))) (:packet-id packet))
+           (when (= 0x26 (:packet-id packet))
+             (>! chunk-packets packet)))
+         (recur)))
+     (reset! switch false)
+     (msg "doneeeeeeeeeeeeeeeeeeeeeeeeeee!!!!!!!!!!"))
+    (go
+     (loop [packet (<! chunk-packets)]
+       (when (and @switch packet)
+         (try
+           (let [chunks (<! (thread (parse-map-chunk-bulk (:data packet))))]
+             (swap! all-chunks merge chunks))
+           (msg "added new chunks")
+           (catch Exception e
+             (msg "there was an exception" e)))
+         (recur (<! chunk-packets))))
+     (msg "yaaaaaaaaaaaaaaaaaaaaaaaaaa~~~~~~~~~"))))
 
 (def ignored (atom #{}))
 (reset! ignored
@@ -731,6 +725,7 @@
 (def ignored-from-server (atom #{}))
 (reset! ignored-from-server
         #{25 21 18 28 23 22 41 32 19 3 0 24 15 40 56 53 26 4 10 5})
+
 (defn forward [port]
   (let [cin (chan)
         cout-orig (chan)
@@ -752,7 +747,9 @@
       (async/pipe cin sout)
       (async/pipe sin cout-orig)
 
-      (print-packets (async/tap sout-mult (chan 1000)) client-packets ignored-from-server)
+      
+      (print-packets (async/tap sout-mult (chan)) client-packets ignored-from-server)
+
       ;; (print-packets (async/tap cout-mult (chan)) server-packets ignored)
 
       cout
