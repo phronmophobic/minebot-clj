@@ -19,20 +19,29 @@
                     DataOutputStream))
   (:gen-class))
 
-(defn chan-seq!
-  ([n ch] (chan-seq! (async/take n ch)))
-  ([ch]
-     (loop [x (<!! ch)
-            xs []]
-       (if x
-         (recur (<!! ch) (conj xs x))
-         xs))))
 
 
-(defn chan-take! [n ch]
-  (doall
-   (for [i (range n)]
-     (<!! ch))))
+(defn byte-input-stream [bytes]
+  (-> bytes
+      (ByteArrayInputStream.)
+      (DataInputStream.)))
+
+
+
+;; (defn chan-seq!
+;;   ([n ch] (chan-seq! (async/take n ch)))
+;;   ([ch]
+;;      (loop [x (<!! ch)
+;;             xs []]
+;;        (if x
+;;          (recur (<!! ch) (conj xs x))
+;;          xs))))
+
+
+;; (defn chan-take! [n ch]
+;;   (doall
+;;    (for [i (range n)]
+;;      (<!! ch))))
 
 
 
@@ -152,7 +161,7 @@
          ba)))
 
 (defn- -read-bytearray [in size]
-  (vec (-read-bytearray-bare in size)))
+  (-read-bytearray-bare in size))
 
 (defn- -read-varint
   [in]
@@ -170,9 +179,10 @@
 (defn read-packet [in]
   (let [length (-read-varint in)
         _ (assert (pos? length) "bad packet length")
-        data-chan (async/to-chan (-read-bytearray in length))
-        packet-id (parse-field :varint data-chan)
-        data (chan-seq! data-chan)]
+        all-data (-read-bytearray in length)
+        bis (byte-input-stream all-data)
+        packet-id (parse-field :varint bis)
+        data (-read-bytearray bis (.available bis))]
     {:length length
      :packet-id packet-id
      :data data}))
@@ -183,36 +193,33 @@
 
 
 
-(defn nbyte-number [n data]
-  (reduce (fn [x [b i]]
-             (bit-or x (bit-shift-left (bit-and 0xFF b) (* i 8))))
-           0
-           (map vector (reverse (chan-seq! n data)) (range))))
+;; (defn nbyte-number [n data]
+;;   (reduce (fn [x [b i]]
+;;              (bit-or x (bit-shift-left (bit-and 0xFF b) (* i 8))))
+;;            0
+;;            (map vector (reverse (chan-seq! n data)) (range))))
 
 (defmethod parse-field :int
   [field-type data]
-  (let [n (nbyte-number 4 data)]
-      (if (> n 0x7FFFFFFF)
-        (int (+ -1 (- n 0xFFFFFFFF)))
-        n)))
+  (.readInt data))
 
 (defmethod parse-field :long
   [field-type data]
-  (nbyte-number 8 data))
+  (.readLong data))
 
 
 (defmethod parse-field :float
   [field-type data]
-  (Float/intBitsToFloat (parse-field :int data)))
+  (.readFloat data))
 
 
 (defmethod parse-field :double
   [field-type data]
-  (Double/longBitsToDouble (nbyte-number 8 data)))
+  (.readDouble data))
 
 (defmethod parse-field :unsigned-short
   [field-type data]
-  (parse-field :short data))
+  (.readShort data))
 
 (defmethod parse-field :meta
   [field-type data]
@@ -229,11 +236,11 @@
 (defmethod parse-field :varint
   [_ data]
   (let [f data]
-    (loop [a (<!! f) t 0 i 0]
+    (loop [a (.readByte data) t 0 i 0]
       (if (= 0 (bit-and (bit-not 0x7f) a))
         (bit-or t
                 (bit-shift-left (bit-and 0x7F a) (* i 7)))
-        (recur (<!! f)
+        (recur (.readByte data)
                (bit-or t
                        (bit-shift-left (bit-and 0x7F a) (* i 7)))
                (inc i))))))
@@ -242,25 +249,25 @@
 (defmethod parse-field :string
   [field-type data]
   (let [length (parse-field :varint data)]
-    (String. (byte-array (chan-seq! length data))
+    (String. (-read-bytearray data  length)
              0 length
              "utf-8")))
 
 (defmethod parse-field :short
   [field-type data]
-  (nbyte-number 2 data))
+  (.readShort data))
 
 (defmethod parse-field :byte
   [field-type data]
-  (byte (<!! data)))
+  (.readByte data))
 
 (defmethod parse-field :unsigned-byte
   [field-type data]
-  (short (<!! data)))
+  (.readShort data))
 
 (defmethod parse-field :bool
   [field-type data]
-  (not (zero? (<!! data))))
+  (not (zero? (.readByte data))))
 
 (declare client-packets)
 (defn parse-packet
@@ -274,7 +281,9 @@
            parsed (when (= 1 (count matching-packet-descriptions))
                     (let [desc (first matching-packet-descriptions)
                           [pname pdirection pid fields] desc
-                          data-chan (async/to-chan data)]
+                          data-chan (byte-input-stream data)  ;;(async/to-chan data)
+                          
+                          ]
                       (try
                         (let [parsed (reduce (fn [parsed field]
                                                (let [[field-name field-type _] field
@@ -644,10 +653,44 @@
     (or (when-let [column (get chunks [x z])]
           (when-let [sect (get column section)]
             (when-let [chunk (nth sect y)]
-              (msg "with something" x y z)
+              #_(msg "with something" x y z)
               (-get-block-from-chunk section [rx ry rz] chunk))))
         0)))
 
+(defn block-id-seq [chunks]
+  (for [[[x-base z-base] chunk] chunks
+        :let [chunk (:block-data chunk)]
+        [y-base chunk] (map-indexed vector chunk)
+        :let [coords (for [y-offset (range 16)
+                           z-offset (range 16)
+                           x-offset (range 16)]
+                       [(+ (* 16 x-base) x-offset)
+                        (+ (* 16 y-base) y-offset)
+                        (+ (* 16 z-base) z-offset)
+                        ])]
+        coord-block (map vector coords chunk)]
+    coord-block))
+
+(defn biome-locator [chunks]
+  (reduce 
+   (fn [m [pos chunk]]
+     (let [biomes (distinct (:biome chunk))]
+       (reduce
+        (fn [m biome]
+          (update-in m [biome] conj pos))
+        m
+        biomes)))
+   {}
+   chunks))
+(def biomes (biome-locator @all-chunks))
+(println (-> (keys biomes) sort))
+
+
+(defn find-block [chunks block-id n]
+  (->> chunks
+       (block-id-seq)
+       (filter #(= block-id (second %)))
+       (take n)))
 
 
 (defn parse-chunk-column! [meta sky-light? data]
@@ -667,19 +710,22 @@
                   chunk (doall
                          (for [i (range 16)]
                            (when (not (zero? (bit-and mask (bit-shift-left 1 i))))
-                             (chan-seq! length data))))]]
+                             (-read-bytearray data length)
+                             ;; (chan-seq! length data)
+                             )))]]
       (assoc! chunk-sections section-key chunk))
-    (assoc! chunk-sections :biome (chan-take! (* 16 16) data))
+    (assoc! chunk-sections :biome (-read-bytearray data (* 16 16)) ;; (chan-take! (* 16 16) data)
+            )
     (persistent! chunk-sections)))
 
 (defn parse-map-chunk-bulk [data]
-  (let [data (async/to-chan data)
+  (let [data (byte-input-stream data)
         column-count (parse-field :short data)
         chunk-data-length (parse-field :int data)
         sky-light? (parse-field :bool data)
-        chunk-data-compressed (chan-seq! chunk-data-length data)
+        chunk-data-compressed (-read-bytearray data chunk-data-length) ;;(chan-seq! chunk-data-length data)
         chunk-data (deflate chunk-data-compressed)
-        chunk-data-chan (async/to-chan chunk-data)
+        chunk-data-chan (byte-input-stream chunk-data)
         metas (doall
                (map (fn [_]
                       (parse-field :meta data))
@@ -868,3 +914,26 @@
 
 
 
+(defn find [chunks id [x y z] radius]
+  (for [x (range (- x radius) (+ x radius))
+        z (range (- z radius) (+ z radius))
+        y (range 254)
+        :let [block (get-block :block-data [x y z] chunks)]
+        :when (= id block)]
+    [x y z]))
+;; (def ll (find @all-chunks 50 [90 68 -358] 200))
+;; (clojure.pprint/pprint (reverse (sort-by second ll)))
+
+
+
+
+;; ( 
+;; [[ -364 31 -340] 54] 
+;; [[ -406 49 -570] 54] 
+;; [[ -405 49 -570] 54] 
+;; [[ -280 20 -697] 54] 
+;; [[ -279 20 -697] 54] 
+;; [[ -455 52 -368] 54] 
+;; [[ -421 19 -368] 54] 
+;; [[ -417 19 -367] 54] 
+;; [[ -364 31 -336] 54])
