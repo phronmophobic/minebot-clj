@@ -26,25 +26,6 @@
       (ByteArrayInputStream.)
       (DataInputStream.)))
 
-
-
-;; (defn chan-seq!
-;;   ([n ch] (chan-seq! (async/take n ch)))
-;;   ([ch]
-;;      (loop [x (<!! ch)
-;;             xs []]
-;;        (if x
-;;          (recur (<!! ch) (conj xs x))
-;;          xs))))
-
-
-;; (defn chan-take! [n ch]
-;;   (doall
-;;    (for [i (range n)]
-;;      (<!! ch))))
-
-
-
 (defmulti -write-field (fn [out field-type field-val]
                          field-type))
 
@@ -52,9 +33,6 @@
 (defmethod -write-field :bytearray
   [out _ ba]
   (io! (.write out ba 0 (count ba))))
-
-;; (defn- -write-bytearray [conn ba]
-;;   )
 
 
 (defmethod -write-field :unsigned-short
@@ -190,14 +168,6 @@
 
 (defmulti parse-field (fn [field-type data]
                         field-type))
-
-
-
-;; (defn nbyte-number [n data]
-;;   (reduce (fn [x [b i]]
-;;              (bit-or x (bit-shift-left (bit-and 0xFF b) (* i 8))))
-;;            0
-;;            (map vector (reverse (chan-seq! n data)) (range))))
 
 (defmethod parse-field :int
   [field-type data]
