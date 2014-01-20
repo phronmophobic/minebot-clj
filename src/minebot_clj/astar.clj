@@ -1,7 +1,5 @@
-(ns mine-bot-clj.astar
+(ns minebot-clj.astar
   (:require [clojure.data.priority-map :refer [priority-map]]))
-
-
 
 
 (defn astar
@@ -12,8 +10,9 @@
             #{start}))
   ([queue distf successorsf visited]
      (when-let [path (-> queue peek first)]
-       (let [node (last path)]
-         (if (zero? (distf node))
+       (let [node (last path)
+             dist (distf node)]
+         (if (zero? dist)
            path
            (let [successors (successorsf node)
                  queue (-> queue
@@ -110,9 +109,16 @@
     (- x)
     x))
 
-(defn map-dist [[x y] [gx gy]]
-  (+ (abs (- x gx))
-     (abs (- y gy))))
+(defn manhattan-distance [start end]
+  (->> (map - start end)
+       (map abs)
+       (reduce +)))
+
+(defn euclidean-distance [start end]
+  (->> (map - start end)
+       (map #(* % %))
+       (reduce +)
+       (Math/sqrt)))
 
 (defn map-astar [m]
   (let [start (->> m
@@ -124,14 +130,8 @@
                    (filter #(= (second %) :goal))
                    first
                    first)]
-    (astar start #(map-dist % goal) #(map-succesors m %))))
+    (astar start (partial manhattan-distance goal) (partial map-succesors m))))
 
-(let [m (make-map
-         "S     "
-         "XXXX   "
-         "G     "
-         )
-      path (map-astar m)]
-  (print-map m path)
-  )
+
+
 

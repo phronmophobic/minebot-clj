@@ -4,6 +4,8 @@
                                         close! timeout
                                         alts! alts!! thread
                                         ] :as async]
+            [clojure.stacktrace]
+            [minebot-clj.astar :refer [astar manhattan-distance euclidean-distance]]
             )
   (:import (java.net Socket ServerSocket)
            java.util.zip.Inflater
@@ -18,6 +20,27 @@
                     DataInputStream
                     DataOutputStream))
   (:gen-class))
+
+(def messages (atom []))
+(def out (atom *out*))
+(defn msg [& s]
+  (binding [*out* @out]
+    (apply println s))
+  (swap! messages (fn [xs s]
+                    (let [xs (conj xs s)]
+                      (if (> (count xs) 30)
+                        (subvec xs 1)
+                        xs)))
+         s))
+
+(defmacro goe [ & body]
+  `(go
+    (try
+      ~@body
+      (catch Exception e#
+        (binding [*out* @out]
+          (msg "error" e#)
+          (.printStackTrace e#))))))
 
 
 
@@ -74,18 +97,6 @@
   (io! (.writeBoolean ^DataOutputStream out b)))
 
 
-(def out (agent nil))
-(def messages (atom []))
-(def out (atom *out*))
-(defn msg [& s]
-  (binding [*out* @out]
-    (apply println s))
-  (swap! messages (fn [xs s]
-                    (let [xs (conj xs s)]
-                      (if (> (count xs) 30)
-                        (subvec xs 1)
-                        xs)))
-         s))
 
 (defn color-dist [rgb1 rgb2]
 ;; d2 = (30*(r1-r2))**2 + (59*(g1-g2))**2 + (11*(b1-b2))**2;
@@ -251,9 +262,7 @@
            parsed (when (= 1 (count matching-packet-descriptions))
                     (let [desc (first matching-packet-descriptions)
                           [pname pdirection pid fields] desc
-                          data-chan (byte-input-stream data)  ;;(async/to-chan data)
-                          
-                          ]
+                          data-chan (byte-input-stream data)]
                       (try
                         (let [parsed (reduce (fn [parsed field]
                                                (let [[field-name field-type _] field
@@ -264,16 +273,14 @@
                                               :packet-data data
                                               :packet-direction pdirection}
                                              fields)]
-                          (when (<! data-chan)
-                            (msg "had some left over data for " pname))
                           parsed)
                         (catch Exception e
-                          #_(msg "parse error" e)
+                          (msg "parse error" e)
                           {:packet-id (:packet-id packet)
                            :packet-name pname
                            :parse-error e})))
                     )]
-       #_(msg "parsing " (format "%x" (:packet-id packet)) (:packet-name parsed) parsed)
+       (msg "parsing " (format "%x" (:packet-id packet)) (:packet-name parsed) parsed)
        parsed)))
 
 
@@ -358,7 +365,7 @@
           length (count data)]
 
       (-write-field out :varint length)
-      (msg "wrote length" length (vec data))
+      #_(msg "wrote length" length (vec data))
       (-write-field out :bytearray data))))
 
 
@@ -486,101 +493,16 @@
 
 
 (defn do-keepalive [in out]
-  (go
+  (goe
    (loop []
      (when-let [packet (<! in)]
        (let [keepalive? (and (zero? (:packet-id packet))
                              (= 5 (:length packet)))]
          (when keepalive?
-           (let [keep-alive-id (parse-field :int (:data packet))]
+           (let [keep-alive-id (parse-field :int (byte-input-stream (:data packet)))]
              (>! out (keep-alive keep-alive-id))))
          (recur))))
-   
    (msg "stopping keep alive")))
-(declare image)
-(defn do-something
-  ([] (do-something 25565))
-  ([port] (do-something "0.0.0.0" port))
-  ([host port]
-     (let [inchan (chan 10)
-           mult (async/mult inchan)
-           outchan (chan)]
-       (msg "connecting")
-       (socket-chan host port inchan outchan)
-       (msg "finished connecting")
-       (let [position (atom nil)
-             running (atom true)]
-         (go
-          (let [inchan (async/tap mult (chan))]
-            (loop []
-              (when-let [packet (<! inchan)]
-                (when-let [parsed (parse-packet packet)]
-                  (when (= :player-position-and-look (:packet-name parsed))
-                    (msg "got player position packet")
-                    (let [{:keys [x y z on-ground pitch yaw]} parsed]
-                      (reset! position parsed)
-                      (msg parsed)
-                      #_(>! outchan (position-look x (+ y 1.62) y z yaw pitch on-ground)))))
-                (recur))))
-          (reset! running false)
-          (msg "stopping position waiter"))
-         (go
-            (try
-              (loop [i 0]
-                (when @position
-                  (when (zero? (mod i 2000))
-                    (>! outchan (look 7.8 0 false)))
-                  (when (= 1000 (mod i 2000))
-                    (>! outchan (look 14.85 -88.05 false)))
-                  (when (= 500 (mod i 1000))
-                    (let [{:keys [x y z]} @position]
-                      (>! outchan (player-position x (- y 1.62) y z true))))
-                  (when (zero? (mod i 1000))
-                    (let [{:keys [x y z]} @position]
-                      (>! outchan (player-position x (- y 1.62) y (inc z) true))))
-                  (>! outchan (player true))
-                  (<! (timeout 50)))
-                (when @running
-                  (recur (+ i 50))))
-              (reset! running false)
-              (msg "stopping position update")
-              
-              )))
-       (go
-        (>! outchan (handshake host port))
-        (<! (timeout 3000))
-        (>! outchan (login "foo2"))
-        (<! (timeout 3000))
-        #_(>! outchan (chat "/gamemode 1"))
-
-        (do-keepalive (async/tap mult (chan)) outchan)
-        (>! outchan (chat "hello"))
-        ;;     (>! outchan (respawn))
-
-        #_(slow
-           
-           (>! outchan (chat "/tp 2 5 -3"))
-           (>! outchan (chat "/give foo fireworks"))
-           
-           (>! outchan (respawn))
-           (>! outchan (use-entity 0 1))))
-       outchan)))
-
-(defn deflate [data]
-  (let [inflater (Inflater.)
-        buffer (byte-array 1024)
-        baos (ByteArrayOutputStream.)]
-    (.setInput inflater (byte-array data))
-    (while (not (.finished inflater))
-      (let [count (.inflate inflater buffer)]
-        (.write baos buffer 0 count)))
-    (.close baos)
-    (.toByteArray baos)))
-
-
-
-
-
 
 (defn- -get-block-from-chunk [section [x y z] data]
   (case section
@@ -617,15 +539,184 @@
         rx (mod x 16)
         ry (mod y 16)
         rz (mod z 16)
-        x ((if (neg? x) dec identity) (long (/ x 16)))
+        ;; xx ((if (neg? x) dec identity) (long (/ (inc x) 16)))
+        ;; yy (long (/ y 16))
+        ;; zz ((if (neg? z) dec identity) (long (/ z 16)))
+        x (if (neg? x)
+            (long (/ (- x 15) 16))
+            (long (/ x 16)))
         y (long (/ y 16))
-        z ((if (neg? z) dec identity) (long (/ z 16)))]
-    (or (when-let [column (get chunks [x z])]
+        z (if (neg? z)
+            (long (/ (- z 15) 16))
+            (long (/ z 16)))]
+    (or (if-let [column (get chunks [x z])]
           (when-let [sect (get column section)]
             (when-let [chunk (nth sect y)]
-              #_(msg "with something" x y z)
-              (-get-block-from-chunk section [rx ry rz] chunk))))
+              (-get-block-from-chunk section [rx ry rz] chunk)))
+          -1)
         0)))
+
+(defn minecraft-successors [chunks [x y z]]
+  (letfn [(get-block! [pos]
+            (let [block (get-block :block-data pos chunks)]
+              (when (= -1 block)
+                (throw (Exception. (str "Hit area with no block " pos))))
+              block))]
+   (for [dx (range -2 3)
+         dy (range -2 3)
+         dz (range -2 3)
+         :let [[x y z] [(+ x dx)
+                        (+ y dy)
+                        (+ z dz)]]
+         :when (not (= 0 dx dy dz))
+         :when (zero? (get-block! [x y z]))
+         :when (zero? (get-block! [x (inc y) z]))
+         :when (pos? (get-block!  [x (dec y) z]))]
+     [x y z])))
+
+(defn minestar [chunks start goal]
+  (let [[sx sy sz] start]
+    (astar start
+           (partial manhattan-distance goal)
+           (partial minecraft-successors chunks))))
+
+
+(defn vdotproduct [a b]
+  (map * a b))
+
+(defn vscale [v k]
+  (map #(* % k) v))
+
+(defn vlength [v]
+  (->> v
+       (map #(* % %))
+       (reduce +)
+       (Math/sqrt)))
+
+(defn v+ [& vs]
+  (apply map + vs))
+
+(defn v- [& vs]
+  (apply map - vs))
+
+(defn vnormalize [v]
+  (let [length (vlength v)]
+   (map #(/ % length) v)))
+
+(declare image)
+(def path (atom nil))
+;; bugs?
+;; walking on water. cactus with height more than 1. foo can't walk through grass
+(def position (atom nil))
+;;(reset! path (minestar @all-chunks (mapv (comp int #(Math/floor %) #(+ 0.05 %) double) @position) [-151 103 60]))
+(declare print-packets)
+(def all-chans (atom []))
+(defn kill-chans []
+  (doseq [ch @all-chans]
+    (close! ch))
+  (reset! all-chans []))
+(defn do-something
+  ([] (do-something 25565))
+  ([port] (do-something "0.0.0.0" port))
+  ([host port]
+     (let [inchan (chan 100)
+           mult (async/mult inchan)
+           outchan (chan)]
+       (msg "connecting")
+       (kill-chans)
+       (swap! all-chans conj outchan)
+       (reset! path nil)
+       (reset! position nil)
+       (socket-chan host port inchan outchan)
+       (msg "finished connecting")
+       (let [running (atom true)]
+         (goe
+          (let [inchan (async/tap mult (chan))]
+            (loop []
+              (when-let [packet (<! inchan)]
+                (when (= 0x08 (:packet-id packet))
+                  (let [parsed (parse-packet packet)
+                        {:keys [x y z on-ground pitch yaw]} parsed]
+                    (when @path
+                      (msg "error trying to move")
+                      (reset! path nil))
+                    (reset! position [x (- y 1.62) z])
+                    #_(>! outchan (position-look x (+ y 1.62) y z yaw pitch on-ground))))
+                (recur))))
+          (reset! running false)
+          (msg "stopping position waiter"))
+         (goe
+          (try
+            (loop [i 0]
+              (when @position
+                ;; (when (zero? (mod i 2000))
+                ;;   (>! outchan (look 7.8 0 false)))
+                ;; (when (= 1000 (mod i 2000))
+                ;;   (>! outchan (look 14.85 -88.05 false)))
+                #_(when (and @path (not (empty? @path)))
+                  (let [next (first @path)
+                        dist-inc 0.05]
+                    (swap! position
+                           (fn [pos]
+                             (let [displacement (-> (v- next pos)
+                                                    vnormalize
+                                                    (vscale dist-inc))]
+                               (v+ pos displacement))))
+                    (msg "got next" @position next)
+                    (when (< (euclidean-distance next @position) (* 2 dist-inc))
+                      (swap! path rest)))
+                    
+                  )
+                (when (zero? (mod i 100))
+                  (when-let [[x y z] (first @path)]
+                    (msg "next" [x y z])
+                    (reset! position [(+ x 0.5) y (+ z 0.5)])
+                    (swap! path rest))
+                  (let [[x y z] @position]
+                    (>! outchan (player-position x y (+ y 1.62) z true))))
+                (>! outchan (player true))
+                (<! (timeout 50)))
+              (when @running
+                (recur (+ i 50))))
+            (reset! running false)
+            (msg "stopping position update")
+              
+            )))
+       (go
+        (>! outchan (handshake host port))
+        (<! (timeout 1000))
+        (>! outchan (login "foo2"))
+        (<! (timeout 1000))
+        #_(>! outchan (chat "/gamemode 1"))
+        
+
+        
+        
+
+        (>! outchan (chat "hello"))
+        ;;     (>! outchan (respawn))
+        )
+       (do-keepalive (async/tap mult (chan 5)) outchan)
+       (print-packets (async/tap mult (chan)) client-packets)
+       
+       outchan)))
+
+(defn deflate [data]
+  (let [inflater (Inflater.)
+        buffer (byte-array 1024)
+        baos (ByteArrayOutputStream.)]
+    (.setInput inflater (byte-array data))
+    (while (not (.finished inflater))
+      (let [count (.inflate inflater buffer)]
+        (.write baos buffer 0 count)))
+    (.close baos)
+    (.toByteArray baos)))
+
+
+
+
+
+
 
 (defn block-id-seq [chunks]
   (for [[[x-base z-base] chunk] chunks
@@ -652,8 +743,8 @@
         biomes)))
    {}
    chunks))
-(def biomes (biome-locator @all-chunks))
-(println (-> (keys biomes) sort))
+
+;; (def biomes (biome-locator @all-chunks))
 
 
 (defn find-block [chunks block-id n]
@@ -709,16 +800,14 @@
 
 
 (def all-chunks (atom {}))
-(defn print-packets [ch packet-descriptions ignored]
+(defn print-packets [ch packet-descriptions]
   (let [switch (atom true)
         chunk-packets (chan 1000)]
     (go
      (loop []
        (when-let [packet (<! ch)]
-         (when-not (contains? @ignored (:packet-id packet))
-           (msg (map first (get packet-descriptions (:packet-id packet))) (:packet-id packet))
-           (when (= 0x26 (:packet-id packet))
-             (>! chunk-packets packet)))
+         (when (= 0x26 (:packet-id packet))
+           (>! chunk-packets packet))
          (recur)))
      (reset! switch false)
      (msg "doneeeeeeeeeeeeeeeeeeeeeeeeeee!!!!!!!!!!"))
@@ -728,7 +817,7 @@
          (try
            (let [chunks (<! (thread (parse-map-chunk-bulk (:data packet))))]
              (swap! all-chunks merge chunks))
-           (msg "added new chunks")
+           #_(msg "added new chunks")
            (catch Exception e
              (msg "there was an exception" e)))
          (recur (<! chunk-packets))))
@@ -740,7 +829,9 @@
 
 (def ignored-from-server (atom #{}))
 (reset! ignored-from-server
-        #{25 21 18 28 23 22 41 32 19 3 0 24 15 40 56 53 26 4 10 5})
+        #{ 25 21 18 28 23 22 41 32 19 3 0 24 15 40 56 53 26 4 10 5
+          35 38
+          })
 
 (defn forward [port]
   (let [cin (chan)
@@ -764,7 +855,7 @@
       (async/pipe sin cout-orig)
 
       
-      (print-packets (async/tap sout-mult (chan)) client-packets ignored-from-server)
+      (print-packets (async/tap sout-mult (chan)) client-packets)
 
       ;; (print-packets (async/tap cout-mult (chan)) server-packets ignored)
 
