@@ -39,8 +39,8 @@
       ~@body
       (catch Exception e#
         (binding [*out* @out]
-          (msg "error" e#)
-          (.printStackTrace e#))))))
+          (msg "error" (with-out-str
+                         (clojure.stacktrace/print-stack-trace e#))))))))
 
 
 
