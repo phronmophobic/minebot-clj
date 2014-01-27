@@ -200,7 +200,7 @@
 
 (defmethod parse-field :unsigned-short
   [field-type data]
-  (.readShort data))
+  (bit-and 0xFFFF (int (.readShort data))))
 
 (defmethod parse-field :meta
   [field-type data]
@@ -261,7 +261,7 @@
 
 (defmethod parse-field :unsigned-byte
   [field-type data]
-  (.readShort data))
+  (bit-and 0xFF (short (.readByte data))))
 
 (defmethod parse-field :bool
   [field-type data]
