@@ -214,6 +214,23 @@
      :add-bitmap add-bitmap}))
 
 
+
+(defmethod parse-field :metadata
+  [field-type data]
+  (loop [item (parse-field :byte data)
+         metadata {}]
+    (if (= item 0x7F)
+      metadata
+      (let [index (bit-and 0x1F item)
+            type (bit-shift-right item 5)
+            field-type (get [:byte :short :int :float :string :slot :vector]
+                            type)]
+        (assoc metadata index (parse-field field-type data))))))
+
+(defmethod parse-field :object-data
+  [field-type data]
+  nil)
+
 (defmethod parse-field :varint
   [_ data]
   (let [f data]
@@ -250,6 +267,17 @@
   [field-type data]
   (not (zero? (.readByte data))))
 
+(defn packet-name
+  ([packet]
+     (packet-name client-packets packet))
+  ([packet-descriptions packet]
+     (let [packet-id (if (map? packet)
+                       (:packet-id packet)
+                       packet)
+           desc (first (get packet-descriptions packet-id))
+           [pname _ _ _] desc]
+       pname)))
+
 (declare client-packets)
 (defn parse-packet
   ([packet]
@@ -275,12 +303,12 @@
                                              fields)]
                           parsed)
                         (catch Exception e
-                          (msg "parse error" e)
+                          (msg "parse error"  pname e)
                           {:packet-id (:packet-id packet)
                            :packet-name pname
                            :parse-error e})))
                     )]
-       (msg "parsing " (format "%x" (:packet-id packet)) (:packet-name parsed) parsed)
+       #_(msg "parsing " (format "%x" (:packet-id packet)) (:packet-name parsed) parsed)
        parsed)))
 
 
@@ -399,8 +427,6 @@
                 (update-in xs [(nth x 2)] conj x))
               {}
               (filter #(= :serverbound (second %)) (cget-packets))))
-
-
 
 
 (defpacket place-block
@@ -577,7 +603,10 @@
 (defn minestar [chunks start goal]
   (let [[sx sy sz] start]
     (astar start
-           (partial manhattan-distance goal)
+           #(let [d (manhattan-distance % goal)]
+              (if (< d 4)
+                0
+                d))
            (partial minecraft-successors chunks))))
 
 
@@ -608,15 +637,20 @@
 ;; bugs?
 ;; walking on water. cactus with height more than 1. foo can't walk through grass
 (def position (atom nil))
-;;(reset! path (minestar @all-chunks (mapv (comp int #(Math/floor %) #(+ 0.05 %) double) @position) [-151 103 60]))
+
+#_(reset! path (minestar @all-chunks (mapv (comp int #(Math/floor %) #(+ 0.05 %) double) @position) [-150 70 22]))
+
 (declare print-packets)
+(declare track-entities)
+(declare follow-players)
 (def all-chans (atom []))
 (defn kill-chans []
   (doseq [ch @all-chans]
     (close! ch))
   (reset! all-chans []))
 (defn do-something
-  ([] (do-something 25565))
+  ([] (do-something 61183 ;; 25565
+       ))
   ([port] (do-something "0.0.0.0" port))
   ([host port]
      (let [inchan (chan 100)
@@ -689,8 +723,6 @@
         (<! (timeout 1000))
         #_(>! outchan (chat "/gamemode 1"))
         
-
-        
         
 
         (>! outchan (chat "hello"))
@@ -698,6 +730,8 @@
         )
        (do-keepalive (async/tap mult (chan 5)) outchan)
        (print-packets (async/tap mult (chan)) client-packets)
+       (track-entities (async/tap mult (chan 10)))
+       (follow-players (async/tap mult (chan 10)))
        
        outchan)))
 
@@ -771,11 +805,11 @@
                   chunk (doall
                          (for [i (range 16)]
                            (when (not (zero? (bit-and mask (bit-shift-left 1 i))))
-                             (-read-bytearray data length)
+                             (vec (-read-bytearray data length))
                              ;; (chan-seq! length data)
                              )))]]
       (assoc! chunk-sections section-key chunk))
-    (assoc! chunk-sections :biome (-read-bytearray data (* 16 16)) ;; (chan-take! (* 16 16) data)
+    (assoc! chunk-sections :biome (vec (-read-bytearray data (* 16 16))) ;; (chan-take! (* 16 16) data)
             )
     (persistent! chunk-sections)))
 
@@ -822,6 +856,94 @@
              (msg "there was an exception" e)))
          (recur (<! chunk-packets))))
      (msg "yaaaaaaaaaaaaaaaaaaaaaaaaaa~~~~~~~~~"))))
+
+(defn to-fixed-number [n]
+  ;; double = (double)abs_int / 32;
+  (/ (double n)
+     32))
+
+(defn from-fixed-number [n]
+  (* (int n)
+     32))
+(def players (atom #{}))
+(def entities (atom {}))
+(defn track-entities [ch]
+  (goe
+   (loop []
+     (when-let [packet (<! ch)]
+       (let [packet-name (packet-name packet)]
+         (case packet-name
+           (:entity-properties :entity-metadata :entity-head-look :entity-velocity :entity-look )
+           nil
+
+           :spawn-player
+           (let [{:keys [entity-id x y z current-item player-name player-uuid]} (parse-packet packet)]
+             (swap! players conj entity-id)
+             (swap! entities update-in [entity-id]
+                    (fn [entity]
+                      (assoc entity
+                        :x (to-fixed-number x)
+                        :y (to-fixed-number y)
+                        :z (to-fixed-number z)
+                        :current-item current-item
+                        :player-name player-name
+                        :player-uuid player-uuid))))
+           
+
+           (:spawn-object :spawn-mob)
+           (let [{:keys [entity-id type x y z]} (parse-packet packet)]
+             (swap! entities update-in [entity-id]
+                    (fn [entity]
+                      (assoc entity
+                        :x (to-fixed-number x)
+                        :y (to-fixed-number y)
+                        :z (to-fixed-number z)
+                        :type type))))
+           
+           :entity-teleport
+           (let [{:keys [x y z entity-id]} (parse-packet packet)]
+             (swap! entities update-in [entity-id]
+                    (fn [entity]
+                      (assoc entity
+                        :x (to-fixed-number x)
+                        :y (to-fixed-number y)
+                        :z (to-fixed-number z)))))
+           
+
+           (:entity-look-and-relative-move
+            :entity-relative-move)
+           (let [{:keys [dx dy dz entity-id]} (parse-packet packet)]
+             (swap! entities update-in [entity-id]
+                    (fn [{:keys [x y z] :as entity}]
+                      (assoc entity
+                        :x (+ x (to-fixed-number dx))
+                        :y (+ y (to-fixed-number dy))
+                        :z (+ z (to-fixed-number dz))))))
+           
+           nil))
+       (recur)))
+   (msg "stopped tracking entities"))
+  )
+
+(defn integerize-position [pos]
+  (mapv (comp int #(Math/floor %) #(+ 0.05 %) double) pos))
+
+(defn follow-players [ch]
+  (goe
+   (loop []
+     (when-let [packet (<! ch)]
+       (when-let [other-entity-id (first @players)]
+         (let [other-player (get @entities other-entity-id)
+               other-position (integerize-position ((juxt :x :y :z) other-player))]
+           
+           (when (and (> (euclidean-distance @position other-position) 10)
+                      (empty? @path))
+             (msg "i'm coming!" other-position)
+             (reset! path (minestar @all-chunks (integerize-position @position) other-position))
+             (msg "on my way!"))))
+       (recur)))
+   (msg "stopped tracking entities"))
+  )
 
 (def ignored (atom #{}))
 (reset! ignored
