@@ -267,6 +267,7 @@
   [field-type data]
   (not (zero? (.readByte data))))
 
+(declare client-packets)
 (defn packet-name
   ([packet]
      (packet-name client-packets packet))
@@ -278,7 +279,6 @@
            [pname _ _ _] desc]
        pname)))
 
-(declare client-packets)
 (defn parse-packet
   ([packet]
      (parse-packet client-packets packet))
@@ -643,13 +643,14 @@
 (declare print-packets)
 (declare track-entities)
 (declare follow-players)
+(declare players entities all-chunks)
 (def all-chans (atom []))
 (defn kill-chans []
   (doseq [ch @all-chans]
     (close! ch))
   (reset! all-chans []))
 (defn do-something
-  ([] (do-something 61183 ;; 25565
+  ([] (do-something 62636 ;; 25565
        ))
   ([port] (do-something "0.0.0.0" port))
   ([host port]
@@ -661,6 +662,9 @@
        (swap! all-chans conj outchan)
        (reset! path nil)
        (reset! position nil)
+       (reset! players #{})
+       (reset! entities {})
+       (reset! all-chunks {})
        (socket-chan host port inchan outchan)
        (msg "finished connecting")
        (let [running (atom true)]
@@ -683,27 +687,8 @@
           (try
             (loop [i 0]
               (when @position
-                ;; (when (zero? (mod i 2000))
-                ;;   (>! outchan (look 7.8 0 false)))
-                ;; (when (= 1000 (mod i 2000))
-                ;;   (>! outchan (look 14.85 -88.05 false)))
-                #_(when (and @path (not (empty? @path)))
-                  (let [next (first @path)
-                        dist-inc 0.05]
-                    (swap! position
-                           (fn [pos]
-                             (let [displacement (-> (v- next pos)
-                                                    vnormalize
-                                                    (vscale dist-inc))]
-                               (v+ pos displacement))))
-                    (msg "got next" @position next)
-                    (when (< (euclidean-distance next @position) (* 2 dist-inc))
-                      (swap! path rest)))
-                    
-                  )
                 (when (zero? (mod i 100))
                   (when-let [[x y z] (first @path)]
-                    (msg "next" [x y z])
                     (reset! position [(+ x 0.5) y (+ z 0.5)])
                     (swap! path rest))
                   (let [[x y z] @position]
@@ -731,8 +716,8 @@
        (do-keepalive (async/tap mult (chan 5)) outchan)
        (print-packets (async/tap mult (chan)) client-packets)
        (track-entities (async/tap mult (chan 10)))
-       (follow-players (async/tap mult (chan 10)))
-       
+       (follow-players (async/tap mult (chan 10)) outchan)
+
        outchan)))
 
 (defn deflate [data]
@@ -915,10 +900,12 @@
            (let [{:keys [dx dy dz entity-id]} (parse-packet packet)]
              (swap! entities update-in [entity-id]
                     (fn [{:keys [x y z] :as entity}]
-                      (assoc entity
-                        :x (+ x (to-fixed-number dx))
-                        :y (+ y (to-fixed-number dy))
-                        :z (+ z (to-fixed-number dz))))))
+                      (if (nil? entity)
+                        entity
+                        (assoc entity
+                          :x (+ x (to-fixed-number dx))
+                          :y (+ y (to-fixed-number dy))
+                          :z (+ z (to-fixed-number dz)))))))
            
            nil))
        (recur)))
@@ -928,21 +915,34 @@
 (defn integerize-position [pos]
   (mapv (comp int #(Math/floor %) #(+ 0.05 %) double) pos))
 
-(defn follow-players [ch]
-  (goe
-   (loop []
-     (when-let [packet (<! ch)]
-       (when-let [other-entity-id (first @players)]
-         (let [other-player (get @entities other-entity-id)
-               other-position (integerize-position ((juxt :x :y :z) other-player))]
-           
-           (when (and (> (euclidean-distance @position other-position) 10)
-                      (empty? @path))
-             (msg "i'm coming!" other-position)
-             (reset! path (minestar @all-chunks (integerize-position @position) other-position))
-             (msg "on my way!"))))
-       (recur)))
-   (msg "stopped tracking entities"))
+(defn follow-players [ch out]
+  (let [done? (atom false)]
+   (goe
+    (loop []
+      (when-let [packet (<! ch)]
+        (recur)))
+    (reset! done? true))
+   (goe
+    (<! (timeout 5000))
+    (loop []
+      (<! (timeout 1000))
+      (when (not @done?)
+        (when-let [other-entity-id (first @players)]
+          (let [other-player (get @entities other-entity-id)
+                other-position (integerize-position ((juxt :x :y :z) other-player))]
+            (when (and (> (euclidean-distance @position other-position) 10)
+                       (empty? @path))
+              (>! out (chat (str  "i'm coming! " other-position)))
+              (if-let [new-path (try
+                                  (minestar @all-chunks (integerize-position @position) other-position)
+                                  (catch Exception e
+                                    nil))]
+                (do
+                  (reset! path new-path)
+                  (>! out (chat "on my way!")))
+                (>! out (chat  "no path found!"))))))
+        (recur)))
+    (msg "stopped following")))
   )
 
 (def ignored (atom #{}))
