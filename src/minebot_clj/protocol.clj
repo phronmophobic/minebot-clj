@@ -66,10 +66,8 @@
                         packet-name (get packet-names table)
                         packet-rows (for [row body
                                           :let [raw-row (-> row
-                                                            (select [:td])
-                                                            (->> (remove :attrs))
-                                                            (->> (map :content))
-                                                            (->> (map first))
+                                                            (select [[:td (but-node (attr? :rowspan))]])
+                                                            (->> (map text))
                                                             (->> (map #(.trim %))))
                                                 [raw-name raw-type raw-notes] raw-row
                                                 name (-> raw-name
