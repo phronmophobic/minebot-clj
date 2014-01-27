@@ -9,25 +9,25 @@
             successors
             #{start}))
   ([queue distf successorsf visited]
-     (when-let [path (-> queue peek first)]
-       (let [node (last path)
-             dist (distf node)]
-         (if (zero? dist)
-           path
-           (let [successors (successorsf node)
-                 queue (-> queue
-                           (into (for [successor successors
-                                       :when (not (contains? visited successor))]
-                                   [(conj path successor) (+ (count path)
-                                                             (distf successor))]))
-                           (dissoc path))
-                 visited (into visited successors)]
-             (recur queue
-                    distf
-                    successorsf
-                    visited
-                    )))
-         ))))
+     (when (< (count visited) 6000)
+       (when-let [path (-> queue peek first)]
+         (let [node (last path)
+               dist (distf node)]
+           (if (zero? dist)
+             path
+             (let [successors (successorsf node)
+                   queue (-> queue
+                             (into (for [successor successors
+                                         :when (not (contains? visited successor))]
+                                     [(conj path successor) (+ (count path)
+                                                               (distf successor))]))
+                             (dissoc path))
+                   visited (into visited successors)]
+               (recur queue
+                      distf
+                      successorsf
+                      visited
+                      ))))))))
 
 
 (defn make-map [& args]
