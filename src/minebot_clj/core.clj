@@ -6,6 +6,7 @@
                                         ] :as async]
             [clojure.stacktrace]
             [minebot-clj.astar :refer [astar manhattan-distance euclidean-distance]]
+            [minebot-clj.model :as model]
             )
   (:import (java.net Socket ServerSocket)
            java.util.zip.Inflater
@@ -201,6 +202,10 @@
 (defmethod parse-field :unsigned-short
   [field-type data]
   (bit-and 0xFFFF (int (.readShort data))))
+
+(defmethod parse-field :unsigned-int
+  [field-type data]
+  (bit-and 0xFFFFFFFF (long (.readInt data))))
 
 (defmethod parse-field :meta
   [field-type data]
@@ -530,61 +535,10 @@
          (recur))))
    (msg "stopping keep alive")))
 
-(defn- -get-block-from-chunk [section [x y z] data]
-  (case section
-    :block-data
-    (let [idx (+ x
-                 (* 16
-                    (+ z
-                       (* y 16))))]
-      (nth data idx))
-
-    (:block-meta :block-add :light-block :light-sky)
-    (let [r (mod (long x) 2)
-          x (long (/ (long x) 2))
-          index (fn index [x y z]
-                  (+ x
-                     (* 8
-                        (+ z
-                           (* 16 y)))))
-          i (index x y z)]
-      (bit-and 0x0F
-               (if (zero? r)
-                 (nth data i)
-                 (bit-shift-right (nth data i) 4))))
-
-    :biome
-    (nth data (+ x
-                 (* 16 z)))))
-
-
-(defn get-block [section [x y z] chunks]
-  (let [x (long x)
-        y (long y)
-        z (long z)
-        rx (mod x 16)
-        ry (mod y 16)
-        rz (mod z 16)
-        ;; xx ((if (neg? x) dec identity) (long (/ (inc x) 16)))
-        ;; yy (long (/ y 16))
-        ;; zz ((if (neg? z) dec identity) (long (/ z 16)))
-        x (if (neg? x)
-            (long (/ (- x 15) 16))
-            (long (/ x 16)))
-        y (long (/ y 16))
-        z (if (neg? z)
-            (long (/ (- z 15) 16))
-            (long (/ z 16)))]
-    (or (if-let [column (get chunks [x z])]
-          (when-let [sect (get column section)]
-            (when-let [chunk (nth sect y)]
-              (-get-block-from-chunk section [rx ry rz] chunk)))
-          -1)
-        0)))
 
 (defn minecraft-successors [chunks [x y z]]
   (letfn [(get-block! [pos]
-            (let [block (get-block :block-data pos chunks)]
+            (let [block (get chunks [:block-data pos] 0)]
               (when (= -1 block)
                 (throw (Exception. (str "Hit area with no block " pos))))
               block))]
@@ -638,19 +592,19 @@
 ;; walking on water. cactus with height more than 1. foo can't walk through grass
 (def position (atom nil))
 
-#_(reset! path (minestar @all-chunks (mapv (comp int #(Math/floor %) #(+ 0.05 %) double) @position) [-150 70 22]))
+#_(reset! path (minestar @world (mapv (comp int #(Math/floor %) #(+ 0.05 %) double) @position) [-150 70 22]))
 
-(declare print-packets)
+(declare update-world)
 (declare track-entities)
 (declare follow-players)
-(declare players entities all-chunks)
+(declare players entities world)
 (def all-chans (atom []))
 (defn kill-chans []
   (doseq [ch @all-chans]
     (close! ch))
   (reset! all-chans []))
 (defn do-something
-  ([] (do-something 62636 ;; 25565
+  ([] (do-something 64129 ;; 25565
        ))
   ([port] (do-something "0.0.0.0" port))
   ([host port]
@@ -664,7 +618,7 @@
        (reset! position nil)
        (reset! players #{})
        (reset! entities {})
-       (reset! all-chunks {})
+       (reset! world (model/->World {}))
        (socket-chan host port inchan outchan)
        (msg "finished connecting")
        (let [running (atom true)]
@@ -714,7 +668,7 @@
         ;;     (>! outchan (respawn))
         )
        (do-keepalive (async/tap mult (chan 5)) outchan)
-       (print-packets (async/tap mult (chan)) client-packets)
+       (update-world (async/tap mult (chan)) world client-packets)
        (track-entities (async/tap mult (chan 10)))
        (follow-players (async/tap mult (chan 10)) outchan)
 
@@ -730,10 +684,6 @@
         (.write baos buffer 0 count)))
     (.close baos)
     (.toByteArray baos)))
-
-
-
-
 
 
 
@@ -763,7 +713,7 @@
    {}
    chunks))
 
-;; (def biomes (biome-locator @all-chunks))
+;; (def biomes (biome-locator @world))
 
 
 (defn find-block [chunks block-id n]
@@ -777,66 +727,100 @@
   (let [section-keys (concat
                       [:block-data :block-meta :light-block]
                       (if sky-light? [:light-sky])
-                      [:block-add]
-)
-        chunk-sections (transient {})]
-    (doseq [section-key section-keys
-            :let [mask (if (= :block-add section-key)
-                         (:add-bitmap meta)
-                         (:primary-bitmap meta))
-                  length (if (= :block-data section-key)
-                           (* 16 16 16)
-                           (* 16 16 8))
-                  chunk (doall
-                         (for [i (range 16)]
-                           (when (not (zero? (bit-and mask (bit-shift-left 1 i))))
-                             (vec (-read-bytearray data length))
-                             ;; (chan-seq! length data)
-                             )))]]
-      (assoc! chunk-sections section-key chunk))
-    (assoc! chunk-sections :biome (vec (-read-bytearray data (* 16 16))) ;; (chan-take! (* 16 16) data)
-            )
-    (persistent! chunk-sections)))
+                      [:block-add])
+        chunk-x (:chunk-x meta)
+        chunk-z (:chunk-z meta)
+        world (into {}
+                    (for [section-key section-keys
+                          :let [mask (if (= :block-add section-key)
+                                       (:add-bitmap meta)
+                                       (:primary-bitmap meta))
+                                length (if (= :block-data section-key)
+                                         (* 16 16 16)
+                                         (* 16 16 8))]
+                          chunk-y (range 16)
+                          :when (not (zero? (bit-and mask (bit-shift-left 1 chunk-y))))
+                          :let [chunk (model/make-chunk section-key (-read-bytearray data length))]]
+                      [[section-key [chunk-x chunk-y chunk-z]]
+                       chunk]))]
+    
+    
+    (assoc world [:biome [chunk-x nil chunk-z]] (model/make-chunk :biome (-read-bytearray data (* 16 16))))))
 
 (defn parse-map-chunk-bulk [data]
   (let [data (byte-input-stream data)
         column-count (parse-field :short data)
         chunk-data-length (parse-field :int data)
         sky-light? (parse-field :bool data)
-        chunk-data-compressed (-read-bytearray data chunk-data-length) ;;(chan-seq! chunk-data-length data)
+        chunk-data-compressed (-read-bytearray data chunk-data-length)
         chunk-data (deflate chunk-data-compressed)
         chunk-data-chan (byte-input-stream chunk-data)
         metas (doall
                (map (fn [_]
                       (parse-field :meta data))
-                    (range column-count)))
-        world (transient {})]
-    (doseq [{:keys [chunk-x chunk-z] :as meta} metas
-            :let [chunks (parse-chunk-column! meta sky-light? chunk-data-chan)]]
-      (assoc! world [chunk-x chunk-z] chunks))
+                    (range column-count)))]
+    (apply merge
+           (for [meta metas]
+             (parse-chunk-column! meta sky-light? chunk-data-chan)))))
 
-    (persistent! world)))
+(defn parse-multi-block-change-packet [packet]
+  (let [data (byte-input-stream (:data packet))
+        chunk-x (parse-field :int data)
+        chunk-z (parse-field :int data)
+        record-count (parse-field :short data)
+        data-size (parse-field :int data)
+        records (doall
+                 (for [i (range record-count)
+                       :let [raw-record (parse-field :unsigned-int data)
+                             block-metadata (bit-and 0x0F raw-record)
+                             block-id (-> raw-record
+                                          (bit-shift-right 4)
+                                          (bit-and 0xFFF))
+                             block-y (-> raw-record
+                                         (bit-shift-right 16)
+                                         (bit-and 0xFF))
+                             block-z (-> raw-record
+                                         (bit-shift-right 24)
+                                         (bit-and 0xF))
+                             block-x (-> raw-record
+                                         (bit-shift-right 28)
+                                         (bit-and 0xF))]]
+                   {:block-metadata block-metadata
+                    :block-id block-id
+                    :block-y block-y
+                    :block-z block-z
+                    :block-x block-x}))]
+    {:chunk-x chunk-x
+     :chunk-z chunk-z
+     :records records}))
 
 
-(def all-chunks (atom {}))
-(defn print-packets [ch packet-descriptions]
+
+(def world (atom (model/->World {})))
+(defn update-world [ch world packet-descriptions]
   (let [switch (atom true)
         chunk-packets (chan 1000)]
-    (go
+    (goe
      (loop []
        (when-let [packet (<! ch)]
          (when (= 0x26 (:packet-id packet))
            (>! chunk-packets packet))
+         (when (= 0x23 (:packet-id packet))
+           (let [{:keys [x y z block-id block-metadata]} (parse-packet packet)]
+             (swap! world #(-> %
+                                    (assoc [:block-data [x y z]] block-id)
+                                    (assoc [:block-meta [x y z]] block-metadata)))))
+         (when (= 0x22 (:packet-id packet))
+           (swap! world model/multi-block-change (parse-multi-block-change-packet packet)))
          (recur)))
      (reset! switch false)
      (msg "doneeeeeeeeeeeeeeeeeeeeeeeeeee!!!!!!!!!!"))
-    (go
+    (goe
      (loop [packet (<! chunk-packets)]
        (when (and @switch packet)
          (try
            (let [chunks (<! (thread (parse-map-chunk-bulk (:data packet))))]
-             (swap! all-chunks merge chunks))
-           #_(msg "added new chunks")
+             (swap! world model/add-chunks chunks))
            (catch Exception e
              (msg "there was an exception" e)))
          (recur (<! chunk-packets))))
@@ -934,8 +918,9 @@
                        (empty? @path))
               (>! out (chat (str  "i'm coming! " other-position)))
               (if-let [new-path (try
-                                  (minestar @all-chunks (integerize-position @position) other-position)
+                                  (minestar @world (integerize-position @position) other-position)
                                   (catch Exception e
+                                    (msg e)
                                     nil))]
                 (do
                   (reset! path new-path)
@@ -977,9 +962,9 @@
       (async/pipe sin cout-orig)
 
       
-      (print-packets (async/tap sout-mult (chan)) client-packets)
+      (update-world (async/tap sout-mult (chan)) client-packets)
 
-      ;; (print-packets (async/tap cout-mult (chan)) server-packets ignored)
+      ;; (update-world (async/tap cout-mult (chan)) server-packets ignored)
 
       cout
       (finally
@@ -1101,10 +1086,10 @@
   (for [x (range (- x radius) (+ x radius))
         z (range (- z radius) (+ z radius))
         y (range 254)
-        :let [block (get-block :block-data [x y z] chunks)]
+        :let [block (get chunks [:block-data [x y z]])]
         :when (= id block)]
     [x y z]))
-;; (def ll (find @all-chunks 50 [90 68 -358] 200))
+;; (def ll (find @world 50 [90 68 -358] 200))
 ;; (clojure.pprint/pprint (reverse (sort-by second ll)))
 
 
