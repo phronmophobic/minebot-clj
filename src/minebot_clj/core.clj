@@ -7,6 +7,7 @@
             [clojure.stacktrace]
             [minebot-clj.astar :refer [astar manhattan-distance euclidean-distance]]
             [minebot-clj.model :as model]
+            [minebot-clj.ui :as ui]
             )
   (:import (java.net Socket ServerSocket)
            java.util.zip.Inflater
@@ -597,6 +598,7 @@
 (declare update-world)
 (declare track-entities)
 (declare follow-players)
+(declare follow-ui-commands)
 (declare players entities world)
 (def all-chans (atom []))
 (defn kill-chans []
@@ -604,7 +606,7 @@
     (close! ch))
   (reset! all-chans []))
 (defn do-something
-  ([] (do-something 64129 ;; 25565
+  ([] (do-something 58802 ;; 25565
        ))
   ([port] (do-something "0.0.0.0" port))
   ([host port]
@@ -618,7 +620,8 @@
        (reset! position nil)
        (reset! players #{})
        (reset! entities {})
-       (reset! world (model/->World {}))
+       (send world (constantly (model/->World {})))
+       (await world)
        (socket-chan host port inchan outchan)
        (msg "finished connecting")
        (let [running (atom true)]
@@ -670,6 +673,7 @@
        (do-keepalive (async/tap mult (chan 5)) outchan)
        (update-world (async/tap mult (chan)) world client-packets)
        (track-entities (async/tap mult (chan 10)))
+       (follow-ui-commands (async/tap mult (chan 10)) outchan)
        (follow-players (async/tap mult (chan 10)) outchan)
 
        outchan)))
@@ -743,8 +747,6 @@
                           :let [chunk (model/make-chunk section-key (-read-bytearray data length))]]
                       [[section-key [chunk-x chunk-y chunk-z]]
                        chunk]))]
-    
-    
     (assoc world [:biome [chunk-x nil chunk-z]] (model/make-chunk :biome (-read-bytearray data (* 16 16))))))
 
 (defn parse-map-chunk-bulk [data]
@@ -796,7 +798,7 @@
 
 
 
-(def world (atom (model/->World {})))
+(def world (agent (model/->World {})))
 (defn update-world [ch world packet-descriptions]
   (let [switch (atom true)
         chunk-packets (chan 1000)]
@@ -807,23 +809,21 @@
            (>! chunk-packets packet))
          (when (= 0x23 (:packet-id packet))
            (let [{:keys [x y z block-id block-metadata]} (parse-packet packet)]
-             (swap! world #(-> %
-                                    (assoc [:block-data [x y z]] block-id)
-                                    (assoc [:block-meta [x y z]] block-metadata)))))
+             (send world #(-> %
+                              (assoc [:block-data [x y z]] block-id)
+                              (assoc [:block-meta [x y z]] block-metadata)))))
          (when (= 0x22 (:packet-id packet))
-           (swap! world model/multi-block-change (parse-multi-block-change-packet packet)))
+           (send world model/multi-block-change (parse-multi-block-change-packet packet)))
          (recur)))
      (reset! switch false)
      (msg "doneeeeeeeeeeeeeeeeeeeeeeeeeee!!!!!!!!!!"))
     (goe
-     (loop [packet (<! chunk-packets)]
-       (when (and @switch packet)
-         (try
-           (let [chunks (<! (thread (parse-map-chunk-bulk (:data packet))))]
-             (swap! world model/add-chunks chunks))
-           (catch Exception e
-             (msg "there was an exception" e)))
-         (recur (<! chunk-packets))))
+     (loop []
+       (let [packet (<! chunk-packets)]
+         (when (and @switch packet)
+           (let [chunks (parse-map-chunk-bulk (:data packet))]
+             (send world model/add-chunks chunks))
+           (recur))))
      (msg "yaaaaaaaaaaaaaaaaaaaaaaaaaa~~~~~~~~~"))))
 
 (defn to-fixed-number [n]
@@ -846,7 +846,7 @@
            nil
 
            :spawn-player
-           (let [{:keys [entity-id x y z current-item player-name player-uuid]} (parse-packet packet)]
+           (let [{:keys [entity-id x y z current-item player-name player-uuid] :as spawned-player} (parse-packet packet)]
              (swap! players conj entity-id)
              (swap! entities update-in [entity-id]
                     (fn [entity]
@@ -929,6 +929,30 @@
         (recur)))
     (msg "stopped following")))
   )
+
+(defn follow-ui-commands [ch out]
+  (let [done? (atom false)
+        command-chan (ui/command-ui)]
+    (goe
+     (loop []
+       (when-let [packet (<! ch)]
+         (recur)))
+     (reset! done? true))
+    (goe
+     (loop []
+       (msg "starting commands. ")
+       (let [command (<! command-chan)]
+         (msg "command: " command)
+         (when (and command (not @done?))
+           (case command
+             :forward
+             (do
+               (>! out (chat "onward!"))))
+           (recur))))
+     (msg "stopped accepting commands")))
+  )
+
+
 
 (def ignored (atom #{}))
 (reset! ignored
@@ -1094,14 +1118,3 @@
 
 
 
-
-;; ( 
-;; [[ -364 31 -340] 54] 
-;; [[ -406 49 -570] 54] 
-;; [[ -405 49 -570] 54] 
-;; [[ -280 20 -697] 54] 
-;; [[ -279 20 -697] 54] 
-;; [[ -455 52 -368] 54] 
-;; [[ -421 19 -368] 54] 
-;; [[ -417 19 -367] 54] 
-;; [[ -364 31 -336] 54])

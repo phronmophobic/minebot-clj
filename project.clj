@@ -9,5 +9,9 @@
                  [org.clojure/core.cache "0.6.3"]
                  [org.clojure/core.async "0.1.267.0-0d7780-alpha"]
                  [org.clojure/data.priority-map "0.0.4"]
-                 [enlive "1.1.5"]]
+                 [enlive "1.1.5"]
+
+                 [qtjambi/qtjambi "4.8.6"]
+                 [qtjambi/qtjambi-macosx "4.8.6"]
+                 ]
   :main minebot-clj.core)
