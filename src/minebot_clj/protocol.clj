@@ -11,8 +11,10 @@
 
 (def cfetch (memoize fetch))
 
+(def protocol-url "http://wiki.vg/index.php?title=Protocol&oldid=5374")
+
 (defn get-packets []
-  (let [page (cfetch "http://wiki.vg/Protocol")
+  (let [page (cfetch protocol-url)
         tables (select page [:table])
         packet-table? (fn [table]
                         (some #(= (:content %) '(" Packet ID ")) (select table [:th])))
