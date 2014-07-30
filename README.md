@@ -1,6 +1,8 @@
 # minebot-clj
 
-FIXME: description
+Minebot clj is a work in progress. The goal is to create a program for writing bot scripts.
+
+Currently, the bot can talk to a 1.7.4 mine craft server and follow a player around the minecraft world. Lots of other things left to do.
 
 ## Installation
 
