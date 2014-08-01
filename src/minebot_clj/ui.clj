@@ -85,50 +85,12 @@
       ~@body)))
 
 (def msg (atom []))
-;; (defmacro on-click [button fn]
-;;   `(qt
-;;     (swap! msg conj "invoking click andler")
-;;     (.. ~button clicked (connect
-;;                          ~fn
-;;                          "invoke()"))))
-
-;; (defn on-quit []
-;;   (println "i quit")
-;;   (swap! msg conj "i quit!"))
-
-
-;; (defmacro connect-signal [obj signal fn]
-;;   `(let [fn# ~fn
-;;          cleanup# (fn []
-;;                     (swap! signals disj fn#))]
-     
-;;      (qt
-;;       (swap! msg conj "connecting signal " ~signal)
-;;       (.. ~obj ~(-> signal name symbol)
-;;           (~'connect
-;;            ~fn
-;;            "invoke()"))
-;;       )
-
-;;      (qt
-;;       (swap! msg conj "connecting signal " ~signal)
-;;       (.. ~obj ~(-> signal name symbol)
-;;           (~'connect
-;;            ~fn
-;;            "invoke()"))
-;;       )
-     
-;;      (swap! signals conj cleanup#)
-;;      (swap! signals conj fn#)))
-
-;; #_(clojure.pprint/pprint
-;;  (macroexpand '(connect-signal @app :aboutToQuit (fn []
-;;                                                    (swap! msg conj "i quit")
-;;                                                    (println "quittin!")) )))
 
 (defprotocol ISignal
   (connect [signal fn]))
 
+;; we need to keep strong references to callback functions
+;; or else they get garbage collected and stop working.
 (def ALL_SIGNALS (atom []))
 (extend-type com.trolltech.qt.QSignalEmitter$AbstractSignal
    ISignal
