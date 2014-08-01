@@ -1,4 +1,5 @@
 (ns minebot-clj.protocol
+  (:import (java.net DatagramPacket DatagramSocket InetAddress MulticastSocket))
   (:use [net.cgrand.enlive-html :exclude [move]]
         [clj-http.client :rename {get download}]))
 
@@ -87,4 +88,23 @@
                     [packet-name direction packet-id packet-rows]))]
     packets))
 
+
+(defn parse-server-port [s]
+  (let [[_ name port] (re-matches #"\[MOTD\](.*)\[/MOTD\]\[AD\](.*)\[/AD\]" s)]
+    (read-string port)))
+
+(defn discover-minecraft-server []
+  "Listens for 10 seconds and returns [host ip] of the first server found."
+  (with-open [socket (MulticastSocket. 4445)]
+    (doto socket
+      (.joinGroup (InetAddress/getByName "224.0.2.60"))
+      (.setSoTimeout 10000)
+      #_(.setBroadcast true)
+      #_(.setReuseAddress true))
+    (let [receive-data (byte-array 1024),
+          receive-packet (new DatagramPacket receive-data 1024)]
+      (.receive socket receive-packet)
+      (let [response (String. (.getData receive-packet) 0 (.getLength receive-packet))]
+        [(.getHostAddress (.getAddress receive-packet))
+         (parse-server-port response)]))))
 

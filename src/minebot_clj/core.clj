@@ -606,8 +606,8 @@
     (close! ch))
   (reset! all-chans []))
 (defn do-something
-  ([] (do-something 58802 ;; 25565
-       ))
+  ([] (let [[host port] (protocol/discover-minecraft-server)]
+        (do-something host port)))
   ([port] (do-something "0.0.0.0" port))
   ([host port]
      (let [inchan (chan 100)
