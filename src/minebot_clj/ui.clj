@@ -78,8 +78,6 @@
            (com.trolltech.qt.core QCoreApplication)
            com.trolltech.qt.QSignalEmitter))
 
-(definterface ISlot
-  (^void fire []))
 
 (defmacro qt [& body]
   `(QApplication/invokeLater
@@ -87,21 +85,74 @@
       ~@body)))
 
 (def msg (atom []))
-(defmacro on-click [button fn]
-  `(qt
-    (swap! msg conj "invoking click andler")
-    (.. ~button clicked (connect
-                         ~fn
-                         "invoke()"))))
+;; (defmacro on-click [button fn]
+;;   `(qt
+;;     (swap! msg conj "invoking click andler")
+;;     (.. ~button clicked (connect
+;;                          ~fn
+;;                          "invoke()"))))
+
+;; (defn on-quit []
+;;   (println "i quit")
+;;   (swap! msg conj "i quit!"))
+
+
+;; (defmacro connect-signal [obj signal fn]
+;;   `(let [fn# ~fn
+;;          cleanup# (fn []
+;;                     (swap! signals disj fn#))]
+     
+;;      (qt
+;;       (swap! msg conj "connecting signal " ~signal)
+;;       (.. ~obj ~(-> signal name symbol)
+;;           (~'connect
+;;            ~fn
+;;            "invoke()"))
+;;       )
+
+;;      (qt
+;;       (swap! msg conj "connecting signal " ~signal)
+;;       (.. ~obj ~(-> signal name symbol)
+;;           (~'connect
+;;            ~fn
+;;            "invoke()"))
+;;       )
+     
+;;      (swap! signals conj cleanup#)
+;;      (swap! signals conj fn#)))
+
+;; #_(clojure.pprint/pprint
+;;  (macroexpand '(connect-signal @app :aboutToQuit (fn []
+;;                                                    (swap! msg conj "i quit")
+;;                                                    (println "quittin!")) )))
+
+(defprotocol ISignal
+  (connect [signal fn]))
+
+(def ALL_SIGNALS (atom []))
+(extend-type com.trolltech.qt.QSignalEmitter$AbstractSignal
+   ISignal
+   (connect [signal callback]
+     (qt
+      (when (empty? @ALL_SIGNALS)
+        (let [cleanup (fn [] (swap! ALL_SIGNALS empty))] 
+          (swap! ALL_SIGNALS conj cleanup)
+          (.connect (.aboutToQuit (QCoreApplication/instance))
+                    cleanup "invoke()")
+          ))
+      (swap! ALL_SIGNALS conj callback)
+      (.connect signal
+                callback
+                "invoke()"))))
 
 
 (defn init [] (QApplication/initialize (make-array String 0)))
 (def button (atom nil))
+(def app (atom nil))
 (def ch (atom nil))
-(defn send-message []
-  (put! @ch :forward))
+
 (defn command-ui []
-  
+  (reset! msg [])
   (reset! button nil)
   (reset! ch (chan (async/dropping-buffer 10)))
   (.execute (.getNonBlockingMainQueueExecutor (com.apple.concurrent.Dispatch/getInstance))
@@ -109,17 +160,16 @@
               (init)
               (swap! msg conj "init")
               (try
-                (let [app (QCoreApplication/instance)]
-                  (reset! button (doto (QPushButton. "Forward") (.show)))
-                  (on-click @button
-                            send-message
-                            #_(fn []
-                              #_(swap! msg conj "click.")
-                              (put! @ch :forward)))
-                  (swap! msg conj "about to exec")
-                  (.exec app)
-                  (close! @ch)
-                  (reset! ch nil))
+                (reset! app (QCoreApplication/instance))
+                (reset! button (doto (QPushButton. "Forward") (.show)))
+                (connect (.clicked @button)
+                         (fn []
+                           (put! @ch :forward)))
+                (swap! msg conj "about to exec")
+                (.exec @app)
+                (close! @ch)
+                (reset! ch nil)
+                (reset! app nil)
                 
                 (catch Exception e
                   (swap! msg conj e)))))
