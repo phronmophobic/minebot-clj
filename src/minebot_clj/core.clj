@@ -536,6 +536,40 @@
          (recur))))
    (msg "stopping keep alive")))
 
+(defn do-position-update [inchan outchan position looking path]
+  (let [running (atom true)]
+    (goe
+     (loop []
+       (when-let [packet (<! inchan)]
+         (when (= 0x08 (:packet-id packet))
+           (let [parsed (parse-packet packet)
+                 {:keys [x y z on-ground pitch yaw]} parsed]
+             (when @path
+               (msg "error trying to move")
+               (reset! path nil))
+             (reset! looking [yaw pitch])
+             (reset! position [x (- y 1.62) z])))
+         (recur)))
+     (reset! running false)
+     (msg "stopping position waiter"))
+    (goe
+     (loop []
+       (when (and @running
+                  @position)
+         (when-let [[x y z] (first @path)]
+           (reset! position [(+ x 0.5) y (+ z 0.5)])
+           (swap! path rest))
+         (let [[x y z] @position]
+           (if @looking
+             (let [[yaw pitch] @looking]
+               (>! outchan (position-look x y (+ y 1.62) z yaw pitch true)))
+             (>! outchan (player-position x y (+ y 1.62) z true))))
+         (>! outchan (player true))
+         (<! (timeout 50)))
+       (recur))
+     (reset! running false)
+     (msg "stopping position update"))))
+
 
 (defn minecraft-successors [chunks [x y z]]
   (letfn [(get-block! [pos]
@@ -592,6 +626,7 @@
 ;; bugs?
 ;; walking on water. cactus with height more than 1. foo can't walk through grass
 (def position (atom nil))
+(def looking (atom nil))
 
 #_(reset! path (minestar @world (mapv (comp int #(Math/floor %) #(+ 0.05 %) double) @position) [-150 70 22]))
 
@@ -624,40 +659,7 @@
        (await world)
        (socket-chan host port inchan outchan)
        (msg "finished connecting")
-       (let [running (atom true)]
-         (goe
-          (let [inchan (async/tap mult (chan))]
-            (loop []
-              (when-let [packet (<! inchan)]
-                (when (= 0x08 (:packet-id packet))
-                  (let [parsed (parse-packet packet)
-                        {:keys [x y z on-ground pitch yaw]} parsed]
-                    (when @path
-                      (msg "error trying to move")
-                      (reset! path nil))
-                    (reset! position [x (- y 1.62) z])
-                    #_(>! outchan (position-look x (+ y 1.62) y z yaw pitch on-ground))))
-                (recur))))
-          (reset! running false)
-          (msg "stopping position waiter"))
-         (goe
-          (try
-            (loop [i 0]
-              (when @position
-                (when (zero? (mod i 100))
-                  (when-let [[x y z] (first @path)]
-                    (reset! position [(+ x 0.5) y (+ z 0.5)])
-                    (swap! path rest))
-                  (let [[x y z] @position]
-                    (>! outchan (player-position x y (+ y 1.62) z true))))
-                (>! outchan (player true))
-                (<! (timeout 50)))
-              (when @running
-                (recur (+ i 50))))
-            (reset! running false)
-            (msg "stopping position update")
-              
-            )))
+       
        (go
         (>! outchan (handshake host port))
         (<! (timeout 1000))
@@ -670,13 +672,20 @@
         (>! outchan (chat "hello"))
         ;;     (>! outchan (respawn))
         )
+
+
        (do-keepalive (async/tap mult (chan 5)) outchan)
+       (do-position-update (async/tap mult (chan)) outchan position looking path)
        (update-world (async/tap mult (chan)) world client-packets)
        (track-entities (async/tap mult (chan 10)))
        (follow-ui-commands (async/tap mult (chan 10)) outchan)
-       (follow-players (async/tap mult (chan 10)) outchan)
+       #_(follow-players (async/tap mult (chan 10)) outchan)
+
+
 
        outchan)))
+
+
 
 (defn deflate [data]
   (let [inflater (Inflater.)
@@ -899,6 +908,21 @@
 (defn integerize-position [pos]
   (mapv (comp int #(Math/floor %) #(+ 0.05 %) double) pos))
 
+(defn try-move-to-player [out]
+  (when-let [other-entity-id (first @players)]
+    (let [other-player (get @entities other-entity-id)
+          other-position (integerize-position ((juxt :x :y :z) other-player))]
+      (put! out (chat (str  "calculating path to " other-position)))
+      (if-let [new-path (try
+                          (minestar @world (integerize-position @position) other-position)
+                          (catch Exception e
+                            (msg e)
+                            nil))]
+        (do
+          (reset! path new-path)
+          (put! out (chat "on my way!")))
+        (put! out (chat  "no path found!"))))))
+
 (defn follow-players [ch out]
   (let [done? (atom false)]
    (goe
@@ -945,9 +969,64 @@
          (msg "command: " command)
          (when (and command (not @done?))
            (case command
-             :forward
+             :speak
              (do
-               (>! out (chat "onward!"))))
+               (>! out (chat "bark!")))
+
+             :up
+             (let [[x y z] (integerize-position @position)]
+               (reset! path [[x
+                              (inc y)
+                              z]]))
+
+             :down
+             (let [[x y z] (integerize-position @position)]
+               (reset! path [[x
+                              (dec y)
+                              z]]))
+
+             :turn
+             (swap! looking
+                    (fn [looking]
+                      (if looking
+                        (let [[yaw pitch] looking]
+                          [(+ 90 yaw) pitch])
+                        [0 0])))
+
+
+             :forward
+             (let [[x y z] (integerize-position @position)]
+               (reset! path [[(inc x)
+                              y
+                              z]]))
+
+             :left
+             (let [[x y z] (integerize-position @position)]
+               (reset! path [[x
+                              y
+                              (inc z)]]))
+
+
+             :right
+             (let [[x y z] (integerize-position @position)]
+               (reset! path [[x
+                              y
+                              (dec z)]]))
+
+             :back
+             (let [[x y z] (integerize-position @position)]
+               (reset! path [[(dec x)
+                              y
+                              z]]))
+
+             :come
+             (do
+               (try-move-to-player out))
+             
+             :exit
+             (do
+               (msg "got a quit message!")
+               (kill-chans)))
            (recur))))
      (msg "stopped accepting commands")))
   )

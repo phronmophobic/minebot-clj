@@ -73,7 +73,12 @@
                                  QToolBox
                                  ;; Quick-access button to commands or options, usually used inside a QToolBar
                                  QToolButton
+                                 QMainWindow
+                                 QDialog
 
+                                 QVBoxLayout
+                                 QHBoxLayout
+                                 
                                  )
            (com.trolltech.qt.core QCoreApplication)
            com.trolltech.qt.QSignalEmitter))
@@ -109,29 +114,53 @@
 
 
 (defn init [] (QApplication/initialize (make-array String 0)))
-(def button (atom nil))
 (def app (atom nil))
 (def ch (atom nil))
 
+
+#_(use '[clojure.reflect :only [reflect]])
 (defn command-ui []
   (reset! msg [])
-  (reset! button nil)
   (reset! ch (chan (async/dropping-buffer 10)))
   (.execute (.getNonBlockingMainQueueExecutor (com.apple.concurrent.Dispatch/getInstance))
             (fn []
-              (init)
+              
+              (when (not @app)
+                (init))
               (swap! msg conj "init")
               (try
                 (reset! app (QCoreApplication/instance))
-                (reset! button (doto (QPushButton. "Forward") (.show)))
-                (connect (.clicked @button)
-                         (fn []
-                           (put! @ch :forward)))
-                (swap! msg conj "about to exec")
-                (.exec @app)
-                (close! @ch)
-                (reset! ch nil)
-                (reset! app nil)
+                (let [dialog (QDialog.)
+                      layout (QVBoxLayout.)
+                      commands [:come
+                                :speak
+                                :forward
+                                :back
+                                :left
+                                :right
+                                :up
+                                :down
+                                :turn
+                                ]]
+                  (doseq [command commands
+                          :let [txt (name command)
+                                button (doto (QPushButton. txt)
+                                         (.setAutoDefault false))]]
+                    (.addWidget layout
+                                button)
+                    (connect (.clicked button)
+                             (fn []
+                               (put! @ch command))))
+                  (.setLayout dialog layout)
+                  (connect (.aboutToQuit @app)
+                           (fn []
+                             (put! @ch :exit)))
+                  (.show dialog)
+                  (swap! msg conj "about to exec")
+                  (.exec @app)
+                  (close! @ch)
+                  (reset! ch nil)
+                  (reset! app nil))
                 
                 (catch Exception e
                   (swap! msg conj e)))))
@@ -139,5 +168,12 @@
 
 
 
+(defn test-ui []
+  (go
+   (let [ch (command-ui)]
+     (loop []
+       (when-let [command (<! ch)]
+         (println command)
+         (recur))))))
 
 
