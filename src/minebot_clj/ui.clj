@@ -141,6 +141,7 @@
                                 :up
                                 :down
                                 :turn
+                                :dig
                                 ]]
                   (doseq [command commands
                           :let [txt (name command)

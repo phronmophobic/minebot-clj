@@ -13,6 +13,7 @@
 (def cfetch (memoize fetch))
 
 (def protocol-url "http://wiki.vg/index.php?title=Protocol&oldid=5374")
+;; (def protocol-url "http://wiki.vg/Protocol")
 
 (defn get-packets []
   (let [page (cfetch protocol-url)
@@ -94,7 +95,7 @@
     (read-string port)))
 
 (defn discover-minecraft-server []
-  "Listens for 10 seconds and returns [host ip] of the first server found."
+  "Listens for 10 seconds and returns [host port] of the first server found."
   (with-open [socket (MulticastSocket. 4445)]
     (doto socket
       (.joinGroup (InetAddress/getByName "224.0.2.60"))

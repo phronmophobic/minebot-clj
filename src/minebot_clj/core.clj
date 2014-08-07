@@ -660,7 +660,7 @@
        (socket-chan host port inchan outchan)
        (msg "finished connecting")
        
-       (go
+       (goe
         (>! outchan (handshake host port))
         (<! (timeout 1000))
         (>! outchan (login "foo2"))
@@ -963,8 +963,8 @@
          (recur)))
      (reset! done? true))
     (goe
+     (msg "starting commands. ")
      (loop []
-       (msg "starting commands. ")
        (let [command (<! command-chan)]
          (msg "command: " command)
          (when (and command (not @done?))
@@ -984,6 +984,16 @@
                (reset! path [[x
                               (dec y)
                               z]]))
+
+             :dig
+             (do
+               (when @position
+                 (let [face 0
+                       [px py pz] (integerize-position @position)
+                       [x y z] [(inc px) (dec py) pz]
+                       status 2]
+                   (>! out (player-digging 0 x y z 0))
+                   (>! out (player-digging status x y z 0)))))
 
              :turn
              (swap! looking
@@ -1048,10 +1058,14 @@
         cout-orig (chan)
         cout (chan)
         _ (go
-           (>! cout (<! cout-orig))
+           (let [handshake (<! cout-orig)]
+             (msg "handshake: " handshake
+                  (-> handshake :data seq))
+             (>! cout handshake))
            (<! cout-orig)
            (>! cout (login "phronmophobic"))
            (async/pipe cout-orig cout))
+        ;; _ (async/pipe cout-orig cout)
         cout-mult (async/mult cout)        
         sin (chan)
         sout (chan)
@@ -1064,8 +1078,12 @@
       (async/pipe cin sout)
       (async/pipe sin cout-orig)
 
+      #_(goe
+       (let [cout (async/tap cout-mult (chan))]
+         (msg "foo" (<! cout))
+         (async/untap cout-mult cout)))
       
-      (update-world (async/tap sout-mult (chan)) client-packets)
+      #_(update-world (async/tap sout-mult (chan)) client-packets)
 
       ;; (update-world (async/tap cout-mult (chan)) server-packets ignored)
 
@@ -1185,7 +1203,7 @@
 
 
 
-(defn find [chunks id [x y z] radius]
+#_(defn find [chunks id [x y z] radius]
   (for [x (range (- x radius) (+ x radius))
         z (range (- z radius) (+ z radius))
         y (range 254)
