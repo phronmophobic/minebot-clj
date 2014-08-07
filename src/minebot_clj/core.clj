@@ -130,11 +130,9 @@
 
 (declare  packet-chan)
 (defn socket-chan [host port inchan outchan]
-  (msg "packet channing")
   (packet-chan (Socket. host port)
                inchan
                outchan)
-  (msg "finished packet channding")
   )
 
 (defn- -read-byte-bare [in]
@@ -554,19 +552,19 @@
      (msg "stopping position waiter"))
     (goe
      (loop []
-       (when (and @running
-                  @position)
-         (when-let [[x y z] (first @path)]
-           (reset! position [(+ x 0.5) y (+ z 0.5)])
-           (swap! path rest))
-         (let [[x y z] @position]
-           (if @looking
-             (let [[yaw pitch] @looking]
-               (>! outchan (position-look x y (+ y 1.62) z yaw pitch true)))
-             (>! outchan (player-position x y (+ y 1.62) z true))))
-         (>! outchan (player true))
-         (<! (timeout 50)))
-       (recur))
+       (when @running
+         (when @position
+           (when-let [[x y z] (first @path)]
+             (reset! position [(+ x 0.5) y (+ z 0.5)])
+             (swap! path rest))
+           (let [[x y z] @position]
+             (if @looking
+               (let [[yaw pitch] @looking]
+                 (>! outchan (position-look x y (+ y 1.62) z yaw pitch true)))
+               (>! outchan (player-position x y (+ y 1.62) z true))))
+           (>! outchan (player true))
+           (<! (timeout 50)))
+         (recur)))
      (reset! running false)
      (msg "stopping position update"))))
 

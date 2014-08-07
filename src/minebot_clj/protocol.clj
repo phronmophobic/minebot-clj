@@ -13,7 +13,7 @@
 (def cfetch (memoize fetch))
 
 (def protocol-url "http://wiki.vg/index.php?title=Protocol&oldid=5374")
-;; (def protocol-url "http://wiki.vg/Protocol")
+#_(def protocol-url "http://wiki.vg/Protocol")
 
 (defn get-packets []
   (let [page (cfetch protocol-url)
