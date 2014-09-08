@@ -111,10 +111,10 @@
 
 
 (defprotocol IEnvironment
-  (set-cell
-    [this name]
+  (set-form
     [this name form]
     [this name form dep])
+  (set-val [this name newval])
 
   (shake [this name]))
 
@@ -132,11 +132,9 @@
 (defrecord Environment [vals forms deps]
 
   IEnvironment
-  (set-cell [this name]
-    (set-cell this name nil))
-  (set-cell [this name form]
-    (set-cell this name form nil))
-  (set-cell [this name form dep]
+  (set-form [this name form]
+    (set-form this name form nil))
+  (set-form [this name form dep]
     (let [forms (assoc forms name form)
 
           deps (if dep
@@ -145,14 +143,32 @@
                                       (remove core-syms)
                                       set)))]
       (shake (Environment. vals forms deps) name)))
+
+  (set-val [this name newval]
+    (let [has-val? (contains? vals name)
+          oldval (get vals name)]
+      (if (or (not has-val?) (not= oldval newval))
+          (let [env (Environment. (assoc vals name newval)
+                                  forms
+                                  deps)]
+            (reduce-kv (fn [env other-name other-deps]
+                         (if (contains? other-deps name)
+                           (shake env other-name)
+                           env))
+                       env
+                       deps))
+          this)))
+
+
   (shake [this name]
-    (let [oldval (get vals name)
-          form (get forms name)
+    (let [form (get forms name)
           args (->> (cell-deps name form)
                     (remove core-syms))]
       (msg "args " args)
-      (if (not (every? #(or (contains? vals %)) args))
-        this
+      (if (not (every? #(contains? vals %) args))
+        (do
+          (msg "couldn't find arg " (remove #(contains? vals %) args))
+          this)
         (let [nsym (gensym)
               _ (msg "preparing eval")
               to-eval `(let [~@(->> args
@@ -172,17 +188,7 @@
                        (finally
                          (remove-ns nsym)))
               _ (msg "eval done.")]
-          (if (not= oldval newval)
-            (let [env (Environment. (assoc vals name newval)
-                                    forms
-                                    deps)]
-              (reduce-kv (fn [env other-name other-deps]
-                           (if (contains? other-deps name)
-                             (shake env other-name)
-                             env))
-                         env
-                         deps))
-            this))))
+          (set-val this name newval))))
 
 ))
 
@@ -224,9 +230,30 @@
       first
       :content
       first))
+(def outch (chan (async/sliding-buffer 1)))
 (swap! env
        (fn [env]
-         (assoc-in env [:vals 'fetch] fetch)))
+         (-> env
+             (set-val 'fetch fetch)
+             (set-val 'outch outch)
+             (set-val '>!! >!!))))
+
+(def inchan (chan (async/sliding-buffer 1)))
+(go
+ (loop []
+   (when-let [val (<! inchan)]
+     (swap! env
+           (fn [env]
+             (set-val env 'inval val)))
+     (recur))))
+
+
+(go
+ (loop []
+   (when-let [val (<! outch)]
+     (msg "val: " val)
+     (recur))))
+
 
 (defn start []
   (.execute (.getNonBlockingMainQueueExecutor (com.apple.concurrent.Dispatch/getInstance))
@@ -263,11 +290,7 @@
                               name (QLineEdit. "")
                               cell-name (symbol (str "$" i "$" j))
                               value (QLabel. "")
-                              refresh (doto (QPushButton. "↺")
-                                        (.setContentsMargins 0 0 0 0)
-                                        (.setFlat true))
                               ]]
-                    (.setFixedWidth refresh 20)
                     (doto cell-layout
                       (.addWidget name)
                       (.setStretch 0 2)
@@ -277,9 +300,6 @@
 
                       (.addWidget value)
                       (.setStretch 2 2)
-
-                      (.addWidget refresh)
-                      (.setStretch 3 1)
 
                       (.setSpacing 0)
                       (.setContentsMargins 0 0 0 0))
@@ -305,15 +325,15 @@
                                                   (let [form (clojure.walk/postwalk-replace
                                                               @aliases
                                                               (read-string (.text text)))
-                                                        _ (msg "set-cell " cell-name form)
-                                                        new-env (set-cell env cell-name form)]
+                                                        _ (msg "set-form " cell-name form)
+                                                        new-env (set-form env cell-name form)]
                                                     (msg "new env!")
                                                     new-env)
                                                   (catch Exception e
                                                     (msg "error " e)
                                                     env))))
-                                       (msg "env: " @env)
-                                       (update-ui)
+                                       (msg "env: \n" (with-out-str
+                                                      (clojure.pprint/pprint @env)))
                                        (catch Exception e
                                          (.setText value (str e)))))
                                    (.setText value ""))
@@ -332,8 +352,13 @@
                   (.setContentsMargins layout 0 0 0 0)
                   (.setLayout main layout)
                   (.setWidget scrollarea main)
+                  (add-watch env :update-ui
+                             (fn [_ _ _ _]
+                               (ui/qt
+                                (update-ui))))
                   (connect (.aboutToQuit @app)
                            (fn []
+                             (remove-watch env :update-ui)
                              (msg "quit")))
                   (connect (.focusChanged @app)
                            (fn [old new]
