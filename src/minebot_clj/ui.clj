@@ -94,6 +94,11 @@
 (defprotocol ISignal
   (connect [signal fn]))
 
+(defn arg-count [f]
+  (let [m (first (.getDeclaredMethods (class f)))
+        p (.getParameterTypes m)]
+    (alength p)))
+
 ;; we need to keep strong references to callback functions
 ;; or else they get garbage collected and stop working.
 (def ALL_SIGNALS (atom []))
@@ -108,9 +113,23 @@
                     cleanup "invoke()")
           ))
       (swap! ALL_SIGNALS conj callback)
-      (.connect signal
-                callback
-                "invoke()"))))
+      (try
+       (let [pcount (if (instance? clojure.lang.RestFn callback)
+                      (arg-count signal)
+                      (arg-count callback))
+             invoke-str (str "invoke("
+                             (apply str (interpose ","
+                                                   (repeat pcount "Object")))
+                             ")")]
+         (.connect signal
+                   callback
+                   invoke-str))
+       (catch Exception e
+         (swap! msg conj (str "error " e)))))))
+
+
+
+
 
 
 (defn init [] (QApplication/initialize (make-array String 0)))
