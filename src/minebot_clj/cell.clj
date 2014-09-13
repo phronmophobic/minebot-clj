@@ -74,8 +74,17 @@
                                  QGridLayout
                                  QTextEdit
                                  QGroupBox
-                                 QWidget)
-           (com.trolltech.qt.core QCoreApplication)))
+                                 QWidget
+                                 )
+           (com.trolltech.qt.core QCoreApplication
+                                  QUrl
+                                  QPoint
+                                  QSize)
+           (com.trolltech.qt.webkit QWebView)
+           (com.trolltech.qt.phonon VideoPlayer
+                                    VideoWidget
+                                    MediaSource)
+           (com.trolltech.qt QVariant)))
 
 (def messages (atom []))
 (def out (atom *out*))
@@ -213,8 +222,8 @@
 
 
 
-(def width 6)
-(def height 6)
+(def width 20)
+(def height 1)
 
 
 
@@ -235,7 +244,9 @@
        (fn [env]
          (-> env
              (set-val 'fetch fetch)
+             (set-val 'qpoint #(QPoint. %1 %2))
              (set-val 'outch outch)
+             (set-val 'show-ui show-ui)
              (set-val '>!! >!!))))
 
 (def inchan (chan (async/sliding-buffer 1)))
@@ -299,7 +310,7 @@
                       (.setStretch 1 4)
 
                       (.addWidget value)
-                      (.setStretch 2 2)
+                      (.setStretch 2 4)
 
                       (.setSpacing 0)
                       (.setContentsMargins 0 0 0 0))
@@ -351,7 +362,7 @@
                   (.setHorizontalSpacing layout 0)
                   (.setContentsMargins layout 0 0 0 0)
                   (.setLayout main layout)
-                  (.setWidget scrollarea main)
+                  ;; (.setWidget scrollarea main)
                   (add-watch env :update-ui
                              (fn [_ _ _ _]
                                (ui/qt
@@ -368,7 +379,11 @@
 
                              #_(msg "focus changed " old new)))
                   (.setLayout dialog (doto (QVBoxLayout.)
-                                       (.addWidget scrollarea)))
+                                       (.addWidget main)
+                                       #_(.addWidget (do (def videoplayer (doto (VideoPlayer. com.trolltech.qt.phonon.Phonon$Category/VideoCategory)))
+                                                       videoplayer))
+                                       #_(.addWidget (doto (QWebView.)
+                                                     (.load (QUrl. "http://google.com/"))))))
                   (.show dialog)
                   (msg "about to exec")
                   (.exec @app)
@@ -381,5 +396,148 @@
 
 
 
+(defn test []
+  (.execute
+   (.getNonBlockingMainQueueExecutor (com.apple.concurrent.Dispatch/getInstance))
+   (fn []
+     (msg "init")
+     (try
+       (reset! app (QCoreApplication/instance))
+       (when (not @app)
+         (ui/init))       
+       (reset! app (QCoreApplication/instance))
+       (let [dialog (QWidget.)
+             label (QLabel. "text" dialog)]
+         (connect (.aboutToQuit @app)
+                  (fn []))
+         (.show dialog)
+         (doto (QPushButton. "button" dialog)
+           (.show))
+         (msg (.children dialog))
+         (.exec @app)
+         (reset! app nil))
+                
+       (catch Exception e
+         (msg e))))))
+
+
+(defn make-node [tag parent]
+  (let [class-name (str "com.trolltech.qt.gui." (name tag))
+        
+        constructor (.getConstructor (Class/forName class-name)
+                                     (into-array Class [QWidget]))
+        instance (.newInstance constructor
+                  (to-array [parent]))]
+    instance
+    ))
+
+
+
+(defmulti set-property (fn [node property value] property))
+(defmethod set-property :pos [node property [x y]]
+  (.setProperty node "pos" (QPoint. x y)))
+
+(defmethod set-property :size [node property [x y :as size]]
+  (if (nil? size)
+    (.adjustSize node)
+    (.setProperty node "size" (QSize. x y))))
+
+(defmethod set-property :default [node property val]
+  (.setProperty node (name property) val))
+
+(defmethod set-property :on-click [node property f]
+  (ui/connect (.clicked node) f))
+
+#_(defmethod set-property :x [node property x]
+  )
+
+(defn merge-props [node aprops bprops]
+  (when (seq (clojure.set/difference (set (keys aprops))
+                                 (set (keys bprops))))
+    (msg "don't know how to handle deleting prop keys"))
+  (.disconnect node)
+  (doseq [[k v] bprops
+          :when (or (not (contains? aprops k))
+                    (not= (get aprops k) v))]
+    (set-property node k v)))
+
+(declare merge-ui)
+(defn merge-children [parent achildren bchildren]
+  (let [child-nodes (.children parent)]
+    (doseq [i (range (max (count achildren) (count bchildren)))
+            :let [achild (nth achildren i nil)
+                  bchild (nth bchildren i nil)
+                  node (nth child-nodes i nil)]]
+      (merge-ui node parent achild bchild))))
+
+(defn merge-ui [node parent a b]
+  (let [[atag aprops & achildren] a
+        [btag bprops & bchildren] b
+        new-node
+        (cond
+         (nil? node)
+         (do
+           (doto (make-node btag parent)
+             (merge-props nil bprops)
+             (merge-children nil bchildren)
+             (.show)))     
+
+         (nil? b)
+         (do
+           (when node
+             (doto node
+               (.setParent nil))))
+
+         (not= atag btag)
+         (do
+           (when node
+             (.setParent node nil))
+           (doto (make-node btag parent)
+             (merge-props nil bprops)
+             (merge-children nil bchildren)))
+
+         :else
+         (do
+           (merge-props node aprops bprops)
+           (merge-children node achildren bchildren)
+           node))]
+    ;; (.adjustSize new-node)
+    new-node))
+
+(def uis (atom {}))
+
+(defn show-ui [key ui]
+  (let [work (fn []
+               (try
+                 (let [[node old] (get @uis key)
+                       new-node (merge-ui node nil old ui)]
+                   (.show new-node)
+                   (swap! uis assoc key [new-node ui]))
+                 (catch Exception e
+                   (msg e))))]
+   (if (nil? (QCoreApplication/instance))
+     (.execute
+      (.getNonBlockingMainQueueExecutor (com.apple.concurrent.Dispatch/getInstance))
+      (fn []
+        (try
+          (ui/init)
+          (work)
+          (.exec (QCoreApplication/instance))
+          (catch Exception e
+            (msg e)))))
+     (QApplication/invokeLater work)))
+  
+  )
+
+
+
+;; (show-ui :test2
+;;          [:QWidget {:size (com.trolltech.qt.core.QSize. 300 300)
+;;                     :minimumHeight 10
+;;                     :minimumWidth 10
+;;                     :pos (com.trolltech.qt.core.QPoint. 100 30)}
+;;           [:QLabel {:pos (com.trolltech.qt.core.QPoint. 0 30)
+;;                     :text "makeadlfj"}]
+;;           [:QLabel {:text "ab  lajsdflksdj f"}]])
 
 
