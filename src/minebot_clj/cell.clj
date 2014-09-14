@@ -240,14 +240,8 @@
       :content
       first))
 (def outch (chan (async/sliding-buffer 1)))
-(swap! env
-       (fn [env]
-         (-> env
-             (set-val 'fetch fetch)
-             (set-val 'qpoint #(QPoint. %1 %2))
-             (set-val 'outch outch)
-             (set-val 'show-ui show-ui)
-             (set-val '>!! >!!))))
+
+
 
 (def inchan (chan (async/sliding-buffer 1)))
 (go
@@ -286,10 +280,7 @@
                           (when-let [n (get aliases cell-name)]
                             (.setText name n))
                           (if (contains? (:vals @env) cell-name)
-                            (let [s (pr-str (get-in @env [:vals cell-name]))
-                                  s (if (> (.length s) 30)
-                                      (str (subs s 0 30) "...")
-                                      s)]
+                            (let [s (pr-str (get-in @env [:vals cell-name]))]
                               (.setText value s))
                             (.setText value ""))))]
                   (doseq [i (range width) 
@@ -343,8 +334,6 @@
                                                   (catch Exception e
                                                     (msg "error " e)
                                                     env))))
-                                       (msg "env: \n" (with-out-str
-                                                      (clojure.pprint/pprint @env)))
                                        (catch Exception e
                                          (.setText value (str e)))))
                                    (.setText value ""))
@@ -420,16 +409,35 @@
        (catch Exception e
          (msg e))))))
 
+(declare merge-props merge-children)
 
-(defn make-node [tag parent]
-  (let [class-name (str "com.trolltech.qt.gui." (name tag))
+(defn make-node [[btag bprops & bchildren] parent]
+  (if (#{:QVBoxLayout :QHBoxLayout} btag)
+    (let [instance (QWidget. parent)
+          class-name (str "com.trolltech.qt.gui." (name btag))
+          constructor (.getConstructor (Class/forName class-name)
+                                       (into-array Class [QWidget]))
+          layout (.newInstance constructor
+                               (to-array [instance]))]
+      (when (and parent (.layout parent))
+        (.addWidget (.layout parent) instance))
+      (merge-props instance nil bprops)
+      (merge-children instance nil bchildren)
+      instance)
+    (let [class-name (str "com.trolltech.qt.gui." (name btag))
         
-        constructor (.getConstructor (Class/forName class-name)
-                                     (into-array Class [QWidget]))
-        instance (.newInstance constructor
-                  (to-array [parent]))]
-    instance
-    ))
+          constructor (.getConstructor (Class/forName class-name)
+                                       (into-array Class [QWidget]))
+          instance (.newInstance constructor
+                                 (to-array [parent]))]
+
+      (merge-props instance nil bprops)
+      (merge-children instance nil bchildren)
+      (when (and parent (.layout parent))
+        (.addWidget (.layout parent) instance))
+
+
+      instance)))
 
 
 
@@ -456,14 +464,13 @@
                                  (set (keys bprops))))
     (msg "don't know how to handle deleting prop keys"))
   (.disconnect node)
-  (doseq [[k v] bprops
-          :when (or (not (contains? aprops k))
-                    (not= (get aprops k) v))]
+  (doseq [[k v] bprops]
     (set-property node k v)))
 
 (declare merge-ui)
 (defn merge-children [parent achildren bchildren]
-  (let [child-nodes (.children parent)]
+  
+  (let [child-nodes (filter #(.isWidgetType %) (.children parent))]
     (doseq [i (range (max (count achildren) (count bchildren)))
             :let [achild (nth achildren i nil)
                   bchild (nth bchildren i nil)
@@ -477,9 +484,7 @@
         (cond
          (nil? node)
          (do
-           (doto (make-node btag parent)
-             (merge-props nil bprops)
-             (merge-children nil bchildren)
+           (doto (make-node b parent)
              (.show)))     
 
          (nil? b)
@@ -492,9 +497,7 @@
          (do
            (when node
              (.setParent node nil))
-           (doto (make-node btag parent)
-             (merge-props nil bprops)
-             (merge-children nil bchildren)))
+           (make-node b parent))
 
          :else
          (do
@@ -506,26 +509,31 @@
 
 (def uis (atom {}))
 
-(defn show-ui [key ui]
-  (let [work (fn []
-               (try
-                 (let [[node old] (get @uis key)
-                       new-node (merge-ui node nil old ui)]
-                   (.show new-node)
-                   (swap! uis assoc key [new-node ui]))
-                 (catch Exception e
-                   (msg e))))]
-   (if (nil? (QCoreApplication/instance))
-     (.execute
-      (.getNonBlockingMainQueueExecutor (com.apple.concurrent.Dispatch/getInstance))
-      (fn []
-        (try
-          (ui/init)
-          (work)
-          (.exec (QCoreApplication/instance))
-          (catch Exception e
-            (msg e)))))
-     (QApplication/invokeLater work)))
+(defn show-ui
+  ([ui]
+     (show-ui :default ui))
+  ([key ui]
+     (let [work (fn []
+                  (try
+                    (let [[node old] (get @uis key)
+                          new-node (merge-ui node nil old ui)]
+                      (doto new-node
+                        (.show))
+                      (swap! uis assoc key [new-node ui]))
+                    (catch Exception e
+                      (msg e)
+                      (msg (with-out-str (clojure.stacktrace/print-stack-trace e))))))]
+       (if (nil? (QCoreApplication/instance))
+         (.execute
+          (.getNonBlockingMainQueueExecutor (com.apple.concurrent.Dispatch/getInstance))
+          (fn []
+            (try
+              (ui/init)
+              (work)
+              (.exec (QCoreApplication/instance))
+              (catch Exception e
+                (msg e)))))
+         (QApplication/invokeLater work))))
   
   )
 
@@ -539,5 +547,23 @@
 ;;           [:QLabel {:pos (com.trolltech.qt.core.QPoint. 0 30)
 ;;                     :text "makeadlfj"}]
 ;;           [:QLabel {:text "ab  lajsdflksdj f"}]])
+
+
+
+(let [env-ref env]
+  (swap! env
+         (fn [env]
+           (-> env
+               (set-val 'fetch fetch)
+               (set-val 'qpoint #(QPoint. %1 %2))
+               (set-val 'outch outch)
+               (set-val 'show-ui show-ui)
+               (set-val 'put! put!)
+               (set-val 'set-val #(swap!
+ env-ref set-val %1 %2))
+               (set-val '>!! >!!)))))
+
+
+
 
 
