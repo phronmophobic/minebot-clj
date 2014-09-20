@@ -75,11 +75,16 @@
                                  QTextEdit
                                  QGroupBox
                                  QWidget
+
+                                 QKeyEvent
+
                                  )
            (com.trolltech.qt.core QCoreApplication
                                   QUrl
                                   QPoint
-                                  QSize)
+                                  QSize
+                                  QObject
+                                  Qt)
            (com.trolltech.qt.webkit QWebView)
            (com.trolltech.qt.phonon VideoPlayer
                                     VideoWidget
@@ -173,19 +178,16 @@
     (let [form (get forms name)
           args (->> (cell-deps name form)
                     (remove core-syms))]
-      (msg "args " args)
       (if (not (every? #(contains? vals %) args))
         (do
           (msg "couldn't find arg " (remove #(contains? vals %) args))
           this)
         (let [nsym (gensym)
-              _ (msg "preparing eval")
               to-eval `(let [~@(->> args
                                     (mapcat
                                      (fn [arg]
                                        [arg (symbol (str nsym) (str arg))])))]
                          ~form)
-              _ (msg "evaling " name (pr-str to-eval))
               newval (try
                        (let [ns (create-ns nsym)]
                          (doseq [arg args]
@@ -195,8 +197,7 @@
                          (msg "error evaling!" e)
                          (throw e))
                        (finally
-                         (remove-ns nsym)))
-              _ (msg "eval done.")]
+                         (remove-ns nsym)))]
           (set-val this name newval))))
 
 ))
@@ -285,64 +286,98 @@
                             (.setText value ""))))]
                   (doseq [i (range width) 
                         j (range height)
-                        :let [cell-widget (QWidget.)
-                              cell-layout (QHBoxLayout.)
-                              text (QLineEdit. "")
+                        :let [;;cell-widget (QWidget.)
+;;                              cell-layout (QHBoxLayout.)
+                              text (doto (QTextEdit. "")
+                                     (.setMinimumWidth 100)
+                                     (.setMaximumHeight 100))
                               ;; &#8634; 
-                              name (QLineEdit. "")
+                              name (doto (QLineEdit. "")
+                                     (.setMinimumWidth 100))
                               cell-name (symbol (str "$" i "$" j))
-                              value (QLabel. "")
+                              value (doto (QLabel. "")
+                                      (.setMaximumWidth 600)
+                                      (.setWordWrap true))
                               ]]
-                    (doto cell-layout
-                      (.addWidget name)
-                      (.setStretch 0 2)
-
-                      (.addWidget text)
-                      (.setStretch 1 4)
-
-                      (.addWidget value)
-                      (.setStretch 2 4)
-
+                    (doto layout
+                      (.addWidget name i 0)
+                      (.addWidget text i 1)
+                      (.addWidget value i 2)
+                      (.setColumnStretch 1 2)
+                      (.setColumnStretch 2 2)
                       (.setSpacing 0)
                       (.setContentsMargins 0 0 0 0))
-                    (.setContentsMargins cell-widget 0 0 0 0)
+                    ;;(.setContentsMargins cell-widget 0 0 0 0)
                     (.setContentsMargins value 10 0 10 0)
 
-                    (.setLayout cell-widget cell-layout)
+                    #_(.setLayout cell-widget cell-layout)
 
                     (connect (.returnPressed name)
                              (fn []
-                               (swap! aliases assoc (symbol (.text name)) cell-name)
-                               (msg "aliases " aliases)))
+                               (swap! aliases assoc (symbol (.text name)) cell-name)))
 
-                    (connect (.returnPressed text)
-                             (fn []
-                               (try
-                                 (if (pos? (count (.text text)))
-                                   (do
-                                     (try
-                                       (swap! env
-                                              (fn [env]
-                                                (try
-                                                  (let [form (clojure.walk/postwalk-replace
-                                                              @aliases
-                                                              (read-string (.text text)))
-                                                        _ (msg "set-form " cell-name form)
-                                                        new-env (set-form env cell-name form)]
-                                                    (msg "new env!")
-                                                    new-env)
-                                                  (catch Exception e
-                                                    (msg "error " e)
-                                                    env))))
-                                       (catch Exception e
-                                         (.setText value (str e)))))
-                                   (.setText value ""))
-                                 (catch Exception e
-                                   (msg "exception " e)))))
+                    (.installEventFilter text
+                                         (proxy [QObject] []
+                                           (eventFilter [obj event]
+                                             (if (and (instance? QKeyEvent event)
+                                                        (#{(.value com.trolltech.qt.core.Qt$Key/Key_Return)
+                                                           (.value com.trolltech.qt.core.Qt$Key/Key_Enter)} (.key event))
+                                                        (= (.value (.modifiers event))
+                                                           (.value com.trolltech.qt.core.Qt$KeyboardModifier/ControlModifier)))
+
+                                               (do
+                                                 (try
+                                                   (if (pos? (count (.toPlainText text)))
+                                                     (do
+                                                       (try
+                                                         (swap! env
+                                                                (fn [env]
+                                                                  (try
+                                                                    (let [form (clojure.walk/postwalk-replace
+                                                                                @aliases
+                                                                                (read-string (.toPlainText text)))
+                                                                          new-env (set-form env cell-name form)]
+                                                                      new-env)
+                                                                    (catch Exception e
+                                                                      (msg "error " e)
+                                                                      env))))
+                                                         (catch Exception e
+                                                           (.setText value (str e)))))
+                                                     (.setText value ""))
+                                                   (catch Exception e
+                                                     (msg "exception " e)))
+                                                 true)
+                                               (proxy-super eventFilter obj event))
+                                             )))
+
+                    ;; (connect (.returnPressed text)
+                    ;;          (fn []
+                    ;;            (try
+                    ;;              (if (pos? (count (.text text)))
+                    ;;                (do
+                    ;;                  (try
+                    ;;                    (swap! env
+                    ;;                           (fn [env]
+                    ;;                             (try
+                    ;;                               (let [form (clojure.walk/postwalk-replace
+                    ;;                                           @aliases
+                    ;;                                           (read-string (.text text)))
+                    ;;                                     _ (msg "set-form " cell-name form)
+                    ;;                                     new-env (set-form env cell-name form)]
+                    ;;                                 (msg "new env!")
+                    ;;                                 new-env)
+                    ;;                               (catch Exception e
+                    ;;                                 (msg "error " e)
+                    ;;                                 env))))
+                    ;;                    (catch Exception e
+                    ;;                      (.setText value (str e)))))
+                    ;;                (.setText value ""))
+                    ;;              (catch Exception e
+                    ;;                (msg "exception " e)))))
 
                         
                     (swap! cells assoc cell-name [name value text])
-                    (.addWidget layout
+                    #_(.addWidget layout
                                 cell-widget
                                 i j))                  
                   
@@ -424,7 +459,9 @@
       (merge-props instance nil bprops)
       (merge-children instance nil bchildren)
       instance)
-    (let [class-name (str "com.trolltech.qt.gui." (name btag))
+    (let [class-name (str (if (= btag :QWebView)
+                            "com.trolltech.qt.webkit."
+                            "com.trolltech.qt.gui.") (name btag))
         
           constructor (.getConstructor (Class/forName class-name)
                                        (into-array Class [QWidget]))
@@ -441,20 +478,52 @@
 
 
 
-(defmulti set-property (fn [node property value] property))
-(defmethod set-property :pos [node property [x y]]
-  (.setProperty node "pos" (QPoint. x y)))
+(defmulti set-property (fn [node property value old-val] property))
+(defmethod set-property :pos [node property [x y :as new-val] old-val]
+  (when (not= new-val old-val)
+    (.setProperty node "pos" (QPoint. x y))))
 
-(defmethod set-property :size [node property [x y :as size]]
+(defmethod set-property :size [node property [x y :as size] old-val]
   (if (nil? size)
     (.adjustSize node)
     (.setProperty node "size" (QSize. x y))))
 
-(defmethod set-property :default [node property val]
-  (.setProperty node (name property) val))
 
-(defmethod set-property :on-click [node property f]
-  (ui/connect (.clicked node) f))
+(defn arg-count [f]
+  (let [m (first (.getDeclaredMethods (class f)))
+        p (.getParameterTypes m)]
+    (alength p)))
+
+(defn my-partial1 [f arg1]
+  (case (arg-count f)
+    0 (fn [] (f))
+    1 (fn [] (f arg1))
+    2 (fn [arg2] (f arg1 arg2))
+    3 (fn [arg2 arg3] (f arg1 arg2 arg3))
+    4 (fn [arg2 arg3 arg4] (f arg1 arg2 arg3 arg4))))
+
+
+(defmethod set-property :default [node property val old-val]
+  (when (not= val old-val)
+   (let [pname (name property)]
+     (if (not= -1 (.indexOfProperty node pname))
+       (.setProperty node (name property) val)
+       (let [field (try (-> node class (.getDeclaredField pname))
+                        (catch java.lang.NoSuchFieldException e))]
+         (if (and field
+                  (.startsWith (.getName (.getType field)) "com.trolltech.qt.QSignalEmitter$Signal"))
+           (ui/connect (.get field node) (my-partial1 val node))
+           (msg "got unknown property " property))))))
+)
+
+;; (defmethod set-property :on-click [node property f]
+;;   (ui/connect (.clicked node) (partial f node)))
+
+;; (defmethod set-property :on-text-changed [node property f]
+;;   (ui/connect (.textChanged node) (partial f node)))
+
+;; (defmethod set-property :on-return-pressed [node property f]
+;;   (ui/connect (.returnPressed node) (partial f node)))
 
 #_(defmethod set-property :x [node property x]
   )
@@ -465,7 +534,7 @@
     (msg "don't know how to handle deleting prop keys"))
   (.disconnect node)
   (doseq [[k v] bprops]
-    (set-property node k v)))
+    (set-property node k v (get aprops k))))
 
 (declare merge-ui)
 (defn merge-children [parent achildren bchildren]
@@ -565,5 +634,13 @@
 
 
 
+;; [:QVBoxLayout {:size nil}
+
+
+;; [:QLineEdit {:return-pressed (fn [line] (set-val 'url (.text line)))}]
+;; [:QWebView {:url url
+;; :load-finished (fn [] (put! outch "done!"))
+;; }]
+;; ]
 
 
