@@ -104,7 +104,8 @@
 
      var nil
 
-     catch (throw (Exception. "can't handle catch") )
+     catch (let [[catch-sym catch-class new-binding & body] form]
+             (remove #{new-binding} (unbound-syms body)))
 
      (mapcat unbound-syms form))
 
