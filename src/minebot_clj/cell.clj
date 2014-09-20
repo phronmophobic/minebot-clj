@@ -350,36 +350,8 @@
                                                (proxy-super eventFilter obj event))
                                              )))
 
-                    ;; (connect (.returnPressed text)
-                    ;;          (fn []
-                    ;;            (try
-                    ;;              (if (pos? (count (.text text)))
-                    ;;                (do
-                    ;;                  (try
-                    ;;                    (swap! env
-                    ;;                           (fn [env]
-                    ;;                             (try
-                    ;;                               (let [form (clojure.walk/postwalk-replace
-                    ;;                                           @aliases
-                    ;;                                           (read-string (.text text)))
-                    ;;                                     _ (msg "set-form " cell-name form)
-                    ;;                                     new-env (set-form env cell-name form)]
-                    ;;                                 (msg "new env!")
-                    ;;                                 new-env)
-                    ;;                               (catch Exception e
-                    ;;                                 (msg "error " e)
-                    ;;                                 env))))
-                    ;;                    (catch Exception e
-                    ;;                      (.setText value (str e)))))
-                    ;;                (.setText value ""))
-                    ;;              (catch Exception e
-                    ;;                (msg "exception " e)))))
-
                         
-                    (swap! cells assoc cell-name [name value text])
-                    #_(.addWidget layout
-                                cell-widget
-                                i j))                  
+                    (swap! cells assoc cell-name [name value text]))                  
                   
 
                   (.setVerticalSpacing layout 0)
@@ -446,7 +418,7 @@
 
 (declare merge-props merge-children)
 
-(defn make-node [[btag bprops & bchildren] parent]
+(defn make-node [[btag bprops & bchildren :as current] parent index]
   (if (#{:QVBoxLayout :QHBoxLayout} btag)
     (let [instance (QWidget. parent)
           class-name (str "com.trolltech.qt.gui." (name btag))
@@ -455,7 +427,7 @@
           layout (.newInstance constructor
                                (to-array [instance]))]
       (when (and parent (.layout parent))
-        (.addWidget (.layout parent) instance))
+        (.insertWidget (.layout parent) index instance))
       (merge-props instance nil bprops)
       (merge-children instance nil bchildren)
       instance)
@@ -471,7 +443,7 @@
       (merge-props instance nil bprops)
       (merge-children instance nil bchildren)
       (when (and parent (.layout parent))
-        (.addWidget (.layout parent) instance))
+        (.insertWidget (.layout parent) index instance))
 
 
       instance)))
@@ -507,8 +479,8 @@
   (when (not= val old-val)
    (let [pname (name property)]
      (if (not= -1 (.indexOfProperty node pname))
-       (.setProperty node (name property) val)
-       (let [field (try (-> node class (.getDeclaredField pname))
+       (.setProperty node pname val)
+       (let [field (try (-> node class (.getField pname))
                         (catch java.lang.NoSuchFieldException e))]
          (if (and field
                   (.startsWith (.getName (.getType field)) "com.trolltech.qt.QSignalEmitter$Signal"))
@@ -538,22 +510,35 @@
 
 (declare merge-ui)
 (defn merge-children [parent achildren bchildren]
-  
-  (let [child-nodes (filter #(.isWidgetType %) (.children parent))]
+  (let [normalize-f (fn [child]
+                      (if (vector? child)
+                        [child]
+                        child))
+        achildren (mapcat normalize-f achildren)
+        bchildren (mapcat normalize-f bchildren)
+        child-nodes (filter #(.isWidgetType %) (.children parent))]
     (doseq [i (range (max (count achildren) (count bchildren)))
             :let [achild (nth achildren i nil)
                   bchild (nth bchildren i nil)
                   node (nth child-nodes i nil)]]
       (merge-ui node parent achild bchild))))
 
+(defn normalize-ui [ui]
+  (if (or (nil? ui)
+          (map? (second ui)))
+    ui
+    (apply vector (first ui) {} (rest ui))))
+
 (defn merge-ui [node parent a b]
-  (let [[atag aprops & achildren] a
+  (let [a (normalize-ui a)
+        b (normalize-ui b)
+        [atag aprops & achildren] a
         [btag bprops & bchildren] b
         new-node
         (cond
          (nil? node)
          (do
-           (doto (make-node b parent)
+           (doto (make-node b parent -1)
              (.show)))     
 
          (nil? b)
@@ -564,9 +549,11 @@
 
          (not= atag btag)
          (do
-           (when node
-             (.setParent node nil))
-           (make-node b parent))
+           (let [old-idx (if (and parent (.layout parent))
+                           (.indexOf (.layout parent) node)
+                           -1)]
+             (.setParent node nil)
+             (make-node b parent old-idx)))
 
          :else
          (do
@@ -634,6 +621,7 @@
 
 
 
+
 ;; [:QVBoxLayout {:size nil}
 
 
@@ -642,5 +630,47 @@
 ;; :load-finished (fn [] (put! outch "done!"))
 ;; }]
 ;; ]
+
+
+(def env2 (atom (Environment. {} {} {})))
+
+(swap! env2 set-val 'text "")
+(swap! env2 set-val 'env-vals (fn []
+                                (:vals @env2)))
+(swap! env2 set-val 'set-val #(swap!
+                               env2 set-val %1 %2))
+(swap! env2 set-val 'truncates (fn [s n]
+                                 (subs s 0 (min n (count s)))))
+(swap! env2 set-val 'find-child (fn [ref name]
+                                  (.findChild (.window ref) nil name)))
+(swap! env2 set-val 'msg msg)
+(swap! env2 set-val 'set-form #(swap! env2 set-form %1 %2))
+(swap! env2 set-val 'shake (fn [name]
+                             (swap! env2 shake name)))
+(swap! env2
+       (fn [env2]
+         (-> env2
+             (set-val 'show-ui show-ui)
+             (set-form 'ui '[:QVBoxLayout {:pos [720 0]
+                                           :size [650 650]}
+                             (for [[k v] (env-vals)]
+                               [:QHBoxLayout
+                                [:QLabel {:text (truncates (str k) 20)
+                                             :minimumWidth 200}]
+                                [:QLabel {:text (truncates (str v) 100)
+                                          :minimumWidth 200}]])
+                             [:QHBoxLayout
+                              [:QLineEdit {:objectName "new-name"}]
+                              [:QLineEdit {:objectName "new-val"}]
+                              [:QPushButton {:text "Add"
+                                             :clicked (fn [this]
+                                                        (msg "...")
+                                                        
+                                                        (set-form (symbol (.text (find-child this "new-name")))
+                                                                  (read-string (.text (find-child this "new-val"))))
+                                                        (shake 'ui))}]]])
+             (set-form 'make-ui! '(show-ui :11 ui)))))
+
+
 
 
