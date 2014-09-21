@@ -86,6 +86,7 @@
            (com.trolltech.qt.core QCoreApplication
                                   QUrl
                                   QPoint
+                                  QRect
                                   QSize
                                   QObject
                                   Qt)
@@ -418,7 +419,8 @@
          (reset! app nil))
                 
        (catch Exception e
-         (msg e))))))
+         (msg (with-out-str
+                (clojure.stacktrace/print-stack-trace e))))))))
 
 (declare merge-props merge-children)
 
@@ -433,6 +435,68 @@
   (shapes [])
   (^void setShapes [shapes]))
 
+(defn draw-shape-dispatch [painter shape-type args]
+  shape-type)
+(defmulti draw-shape draw-shape-dispatch)
+
+(do
+  (let [top-size 25
+        bottom-size 10
+        child-offset 10
+        flags 0
+        margin 3
+        padding 3
+        child-right-padding 6]
+   (defn scratch-block-height [painter [text & children]]
+     (+ top-size
+        (apply + (map (partial scratch-block-height painter) (map rest children)))
+        (if (seq children)
+          bottom-size
+          0)))
+
+   (defn scratch-block-width [painter [text & children]]
+     (apply max
+            (+ (* 2 padding)
+               margin
+               (.width (.boundingRect painter
+                                      (QRect.)
+                                      flags
+                                      text)))
+            (->> children
+                 (map rest)
+                 (map (partial scratch-block-width painter))
+                 (map (partial + child-offset child-right-padding)))))
+
+   (defmethod draw-shape :scratch-block [painter shape-type [text & children :as block]]
+     (let [height (scratch-block-height painter block)
+           width (scratch-block-width painter block)]
+       
+       (.drawText painter (QRect. (+ padding (+ padding margin)) margin width height) flags text)
+       (draw-shape painter :drawRoundedRect [margin
+                                             margin
+                                             width
+                                             height
+                                             5 5])
+       (.save painter)
+       (.translate painter child-offset top-size)
+       (doseq [child children]
+         (draw-shape painter :scratch-block (rest child))
+         (.translate painter 0 (scratch-block-height painter (rest child))))
+       (.restore painter)
+       )))
+
+  (repaint-canvas))
+
+(defmethod draw-shape :default [painter shape-type args]
+  (clojure.lang.Reflector/invokeInstanceMethod
+   painter (name shape-type) (to-array args)))
+
+(defn draw-shapes [painter shapes]
+  (doseq [shape @shapes]
+    (if-not (vector? shape)
+      (dorun (map (partial draw-shapes painter) shape))
+      (let [[shape-type & args] shape]
+        (draw-shape painter shape-type args)))))
 
 (defn qcanvas [parent]
   (let [shapes (atom nil)]
@@ -440,18 +504,17 @@
       (shapes []
         @shapes)
       (setShapes [_shapes]
-        (reset! shapes _shapes))
+        (reset! shapes _shapes)
+        (.repaint this))
 
       (paintEvent [event]
         (with-painter [painter this]
           (doto painter
             (.setRenderHint com.trolltech.qt.gui.QPainter$RenderHint/Antialiasing))
           (try
-           (doseq [[shape-method & args] @shapes]
-             (clojure.lang.Reflector/invokeInstanceMethod
-              painter (name shape-method) (to-array args)))
-           (catch Exception e
-             (msg "e"))))
+            (draw-shapes painter shapes)
+            (catch Exception e
+              (msg e))))
         nil))))
 
 
@@ -723,9 +786,39 @@
 
 
 (swap! scratch-env set-val 'show-ui show-ui)
-(swap! scratch-env set-form 'make-ui! '(show-ui :11 ui))
+(swap! scratch-env set-form 'make-ui! '(show-ui :scratch ui))
+
+(defmacro with-scratch [sym body]
+  `(swap! scratch-env set-form (quote ~sym) (quote ~body)))
+
+
 
 (swap! scratch-env set-form 'ui '[:QVBoxLayout {:pos [720 0]
                                                 :size [650 650]}
-                [:QLabel {"text" "BootScratch!"}]])
+                                  [:QLabel {"text" "BootScratch!"}]
+                                  [:QCanvas
+                                   {:size [400 400]
+                                    :pos [20 20]
+                                    :objectName "canvas"
+                                    :shapes
+                                    [
+                                     [:scratch-block "set X to 7"
+                                      [:scratch-block "set X to 7"]
+                                      [:scratch-block "set X to 7"
+                                       [:scratch-block "set X to 7"]
+                                       [:scratch-block "set X to 7"]
+                                       [:scratch-block "set X to 7"]]
+                                      [:scratch-block "set X to 7"]]]}]]
+       )
+(swap! scratch-env set-val 'radius 40)
+
+
+(defn repaint-canvas []
+  (ui/qt
+   (try
+     (let [canvas (.findChild (.window (first (:scratch @uis))) nil "canvas")]
+       (.repaint canvas))
+     (catch Exception e
+       (msg e)))))
+
 
