@@ -77,8 +77,12 @@
                                  QWidget
 
                                  QKeyEvent
+                                 QPainter
+                                 QPen
 
                                  )
+           clojure.lang.Reflector
+           com.trolltech.qt.gui.QPainter$RenderHints
            (com.trolltech.qt.core QCoreApplication
                                   QUrl
                                   QPoint
@@ -418,19 +422,69 @@
 
 (declare merge-props merge-children)
 
+(defmacro with-painter [[painter paint-device] & body]
+  `(let [~painter (QPainter.)
+         paint-device# ~paint-device]
+     (.begin ~painter paint-device#)
+     ~@body
+     (.end ~painter)))
+
+(definterface IShaperDrawer
+  (shapes [])
+  (^void setShapes [shapes]))
+
+
+(defn qcanvas [parent]
+  (let [shapes (atom nil)]
+    (proxy [QWidget IShaperDrawer] [parent]
+      (shapes []
+        @shapes)
+      (setShapes [_shapes]
+        (reset! shapes _shapes))
+
+      (paintEvent [event]
+        (with-painter [painter this]
+          (doto painter
+            (.setRenderHint com.trolltech.qt.gui.QPainter$RenderHint/Antialiasing))
+          (try
+           (doseq [[shape-method & args] @shapes]
+             (clojure.lang.Reflector/invokeInstanceMethod
+              painter (name shape-method) (to-array args)))
+           (catch Exception e
+             (msg "e"))))
+        nil))))
+
+
+
+;; (show-ui :canvas-test1139fsdf29lkjjdssdkkkkkkkk
+;;          [:QWidget {:size [400 400] }
+;;           [:QCanvas {:shapes [[:drawRect 0 0 100 100]
+;;                               [:drawArc 100 100 50 50 0 (* 16 180)]
+;;                               [:drawRect 25 25 20 20]]
+;;                      :size [500 500]} ]])
+
+(declare set-property)
 (defn make-node [[btag bprops & bchildren :as current] parent index]
-  (if (#{:QVBoxLayout :QHBoxLayout} btag)
-    (let [instance (QWidget. parent)
-          class-name (str "com.trolltech.qt.gui." (name btag))
-          constructor (.getConstructor (Class/forName class-name)
-                                       (into-array Class [QWidget]))
-          layout (.newInstance constructor
-                               (to-array [instance]))]
-      (when (and parent (.layout parent))
-        (.insertWidget (.layout parent) index instance))
-      (merge-props instance nil bprops)
-      (merge-children instance nil bchildren)
-      instance)
+  (cond
+   (#{:QCanvas} btag)
+   (doto (qcanvas parent)
+     (.setParent parent)
+     (merge-props nil bprops))
+
+   (#{:QVBoxLayout :QHBoxLayout} btag)
+   (let [instance (QWidget. parent)
+         class-name (str "com.trolltech.qt.gui." (name btag))
+         constructor (.getConstructor (Class/forName class-name)
+                                      (into-array Class [QWidget]))
+         layout (.newInstance constructor
+                              (to-array [instance]))]
+     (when (and parent (.layout parent))
+       (.insertWidget (.layout parent) index instance))
+     (merge-props instance nil bprops)
+     (merge-children instance nil bchildren)
+     instance)
+
+    :else
     (let [class-name (str (if (= btag :QWebView)
                             "com.trolltech.qt.webkit."
                             "com.trolltech.qt.gui.") (name btag))
@@ -594,17 +648,7 @@
   )
 
 
-
-;; (show-ui :test2
-;;          [:QWidget {:size (com.trolltech.qt.core.QSize. 300 300)
-;;                     :minimumHeight 10
-;;                     :minimumWidth 10
-;;                     :pos (com.trolltech.qt.core.QPoint. 100 30)}
-;;           [:QLabel {:pos (com.trolltech.qt.core.QPoint. 0 30)
-;;                     :text "makeadlfj"}]
-;;           [:QLabel {:text "ab  lajsdflksdj f"}]])
-
-
+(barf)
 
 (let [env-ref env]
   (swap! env
@@ -619,17 +663,6 @@
  env-ref set-val %1 %2))
                (set-val '>!! >!!)))))
 
-
-
-
-;; [:QVBoxLayout {:size nil}
-
-
-;; [:QLineEdit {:return-pressed (fn [line] (set-val 'url (.text line)))}]
-;; [:QWebView {:url url
-;; :load-finished (fn [] (put! outch "done!"))
-;; }]
-;; ]
 
 
 (def env2 (atom (Environment. {} {} {})))
@@ -672,5 +705,27 @@
              (set-form 'make-ui! '(show-ui :11 ui)))))
 
 
+(def scratch-env (atom (Environment. {} {} {})))
 
+(swap! scratch-env set-val 'text "")
+(swap! scratch-env set-val 'env-vals (fn []
+                                (:vals @scratch-env)))
+(swap! scratch-env set-val 'set-val #(swap!
+                               scratch-env set-val %1 %2))
+(swap! scratch-env set-val 'truncates (fn [s n]
+                                 (subs s 0 (min n (count s)))))
+(swap! scratch-env set-val 'find-child (fn [ref name]
+                                  (.findChild (.window ref) nil name)))
+(swap! scratch-env set-val 'msg msg)
+(swap! scratch-env set-val 'set-form #(swap! scratch-env set-form %1 %2))
+(swap! scratch-env set-val 'shake (fn [name]
+                             (swap! scratch-env shake name)))
+
+
+(swap! scratch-env set-val 'show-ui show-ui)
+(swap! scratch-env set-form 'make-ui! '(show-ui :11 ui))
+
+(swap! scratch-env set-form 'ui '[:QVBoxLayout {:pos [720 0]
+                                                :size [650 650]}
+                [:QLabel {"text" "BootScratch!"}]])
 
