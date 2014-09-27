@@ -99,21 +99,21 @@
         p (.getParameterTypes m)]
     (alength p)))
 
+
 ;; we need to keep strong references to callback functions
 ;; or else they get garbage collected and stop working.
 (def ALL_SIGNALS (atom []))
 (extend-type com.trolltech.qt.QSignalEmitter$AbstractSignal
    ISignal
    (connect [signal callback]
-     (qt
-      (when (empty? @ALL_SIGNALS)
-        (let [cleanup (fn [] (swap! ALL_SIGNALS empty))] 
-          (swap! ALL_SIGNALS conj cleanup)
-          (.connect (.aboutToQuit (QCoreApplication/instance))
-                    cleanup "invoke()")
-          ))
-      (swap! ALL_SIGNALS conj callback)
-      (try
+     (when (empty? @ALL_SIGNALS)
+       (let [cleanup (fn [] (swap! ALL_SIGNALS empty))] 
+         (swap! ALL_SIGNALS conj cleanup)
+         (.connect (.aboutToQuit (QCoreApplication/instance))
+                   cleanup "invoke()")
+         ))
+     (swap! ALL_SIGNALS conj callback)
+     (try
        (let [pcount (if (instance? clojure.lang.RestFn callback)
                       (arg-count signal)
                       (arg-count callback))
@@ -125,7 +125,7 @@
                    callback
                    invoke-str))
        (catch Exception e
-         (swap! msg conj (str "error " e)))))))
+         (swap! msg conj (str "error " e))))))
 
 
 
