@@ -302,6 +302,7 @@
                               cell-name (symbol (str "$" i "$" j))
                               value (doto (QLabel. "")
                                       (.setMaximumWidth 600)
+                                      (.setMaximumHeight 100)
                                       (.setWordWrap true))
                               ]]
                     (doto layout
@@ -439,53 +440,51 @@
   shape-type)
 (defmulti draw-shape draw-shape-dispatch)
 
-(do
-  (let [top-size 25
-        bottom-size 10
-        child-offset 10
-        flags 0
-        margin 3
-        padding 3
-        child-right-padding 6]
-   (defn scratch-block-height [painter [text & children]]
-     (+ top-size
-        (apply + (map (partial scratch-block-height painter) (map rest children)))
-        (if (seq children)
-          bottom-size
-          0)))
 
-   (defn scratch-block-width [painter [text & children]]
-     (apply max
-            (+ (* 2 padding)
-               margin
-               (.width (.boundingRect painter
-                                      (QRect.)
-                                      flags
-                                      text)))
-            (->> children
-                 (map rest)
-                 (map (partial scratch-block-width painter))
-                 (map (partial + child-offset child-right-padding)))))
+(let [top-size 25
+      bottom-size 10
+      child-offset 10
+      flags 0
+      margin 3
+      padding 3
+      child-right-padding 6]
+  (defn scratch-block-height [painter [text & children]]
+    (+ top-size
+       (apply + (map (partial scratch-block-height painter) (map rest children)))
+       (if (seq children)
+         bottom-size
+         0)))
 
-   (defmethod draw-shape :scratch-block [painter shape-type [text & children :as block]]
-     (let [height (scratch-block-height painter block)
-           width (scratch-block-width painter block)]
-       
-       (.drawText painter (QRect. (+ padding (+ padding margin)) margin width height) flags text)
-       (draw-shape painter :drawRoundedRect [margin
-                                             margin
-                                             width
-                                             height
-                                             5 5])
-       (.save painter)
-       (.translate painter child-offset top-size)
-       (doseq [child children]
-         (draw-shape painter :scratch-block (rest child))
-         (.translate painter 0 (scratch-block-height painter (rest child))))
-       (.restore painter)
-       )))
+  (defn scratch-block-width [painter [text & children]]
+    (apply max
+           (+ (* 2 padding)
+              margin
+              (.width (.boundingRect painter
+                                     (QRect.)
+                                     flags
+                                     text)))
+           (->> children
+                (map rest)
+                (map (partial scratch-block-width painter))
+                (map (partial + child-offset child-right-padding)))))
 
-  (repaint-canvas))
+  (defmethod draw-shape :scratch-block [painter shape-type [text & children :as block]]
+    (let [height (scratch-block-height painter block)
+          width (scratch-block-width painter block)]
+      
+      (.drawText painter (QRect. (+ padding (+ padding margin)) margin width height) flags text)
+      (draw-shape painter :drawRoundedRect [margin
+                                            margin
+                                            width
+                                            height
+                                            5 5])
+      (.save painter)
+      (.translate painter child-offset top-size)
+      (doseq [child children]
+        (draw-shape painter :scratch-block (rest child))
+        (.translate painter 0 (scratch-block-height painter (rest child))))
+      (.restore painter)
+      )))
 
 (defmethod draw-shape :default [painter shape-type args]
   (clojure.lang.Reflector/invokeInstanceMethod
@@ -498,7 +497,8 @@
       (let [[shape-type & args] shape]
         (draw-shape painter shape-type args)))))
 
-(defn qcanvas [parent]
+
+(defn QCanvas [parent]
   (let [shapes (atom nil)]
     (proxy [QWidget IShaperDrawer] [parent]
       (shapes []
@@ -517,22 +517,46 @@
               (msg e))))
         nil))))
 
+;; (ScratchBlock [text children])
 
+;; (ScratchGroup [x y block])
 
-;; (show-ui :canvas-test1139fsdf29lkjjdssdkkkkkkkk
-;;          [:QWidget {:size [400 400] }
-;;           [:QCanvas {:shapes [[:drawRect 0 0 100 100]
-;;                               [:drawArc 100 100 50 50 0 (* 16 180)]
-;;                               [:drawRect 25 25 20 20]]
-;;                      :size [500 500]} ]])
+;; (ScratchArea [groups highlight select-group])
+
+(definterface IText
+  (^String text [])
+  (^void setText [^String text]))
+
+(defn QScratchBlock [parent]
+  (let [label (QLabel.)
+        init (fn [block]
+               (let [layout (QVBoxLayout.)]
+                 (.setLayout block layout)
+                 (doto label
+                   (.setParent block)
+                   (.show)))
+               block)]
+    
+    (init
+     (proxy [QWidget IText] [parent]
+       (text []
+         (.text label))
+       (setText [_text]
+         (.setText label (str _text))
+         (.adjustSize label))))))
 
 (declare set-property)
 (defn make-node [[btag bprops & bchildren :as current] parent index]
   (cond
-   (#{:QCanvas} btag)
-   (doto (qcanvas parent)
-     (.setParent parent)
-     (merge-props nil bprops))
+   (#{:QCanvas :QScratchBlock} btag)
+   (let [constructor (get (ns-map (find-ns 'minebot-clj.cell)) (symbol (name btag)))
+         instance (constructor parent)]
+     (merge-props instance nil bprops)
+     (merge-children instance nil bchildren)
+     (when (and parent (.layout parent))
+       (.insertWidget (.layout parent) index instance))
+     instance)
+
 
    (#{:QVBoxLayout :QHBoxLayout} btag)
    (let [instance (QWidget. parent)
@@ -722,8 +746,16 @@
                (set-val 'outch outch)
                (set-val 'show-ui show-ui)
                (set-val 'put! put!)
-               (set-val 'set-val #(swap!
- env-ref set-val %1 %2))
+               (set-val 'set-val (fn
+                                   ([k v]
+                                      (swap! env-ref set-val k v))
+                                   ([kvs]
+                                      (swap! env-ref
+                                             (fn [env]
+                                               (reduce (fn [env [k v]]
+                                                         (set-val env k v))
+                                                       env
+                                                       kvs))))))
                (set-val '>!! >!!)))))
 
 
@@ -733,8 +765,17 @@
 (swap! env2 set-val 'text "")
 (swap! env2 set-val 'env-vals (fn []
                                 (:vals @env2)))
-(swap! env2 set-val 'set-val #(swap!
-                               env2 set-val %1 %2))
+(swap! env2 set-val 'set-val
+       (fn
+         ([k v]
+            (swap! env2 set-val k v))
+         ([kvs]
+            (swap! env2
+                   (fn [env]
+                     (reduce (fn [env [k v]]
+                               (set-val env k v))
+                             env
+                             kvs))))))
 (swap! env2 set-val 'truncates (fn [s n]
                                  (subs s 0 (min n (count s)))))
 (swap! env2 set-val 'find-child (fn [ref name]
@@ -743,29 +784,58 @@
 (swap! env2 set-val 'set-form #(swap! env2 set-form %1 %2))
 (swap! env2 set-val 'shake (fn [name]
                              (swap! env2 shake name)))
+
+(defmacro defenv2 [sym body]
+  `(swap! env2 set-form (quote ~sym) (quote ~body)))
+
+(defenv2 current-num 0)
+(defenv2 current-op nil)
+(defenv2 next-num nil)
 (swap! env2
        (fn [env2]
          (-> env2
              (set-val 'show-ui show-ui)
-             (set-form 'ui '[:QVBoxLayout {:pos [720 0]
-                                           :size [650 650]}
-                             (for [[k v] (env-vals)]
-                               [:QHBoxLayout
-                                [:QLabel {:text (truncates (str k) 20)
-                                             :minimumWidth 200}]
-                                [:QLabel {:text (truncates (str v) 100)
-                                          :minimumWidth 200}]])
+             (set-form 'ui '[:QVBoxLayout
+                             [:QLabel {:text (if next-num
+                                               (str next-num)
+                                               (str current-num))}]
+                             [:QLabel {:text (str "next " (pr-str next-num))}]
+                             [:QLabel {:text (str "current " (pr-str current-num))}]
+                             [:QLabel {:text (str "op " (pr-str current-op))}]
                              [:QHBoxLayout
-                              [:QLineEdit {:objectName "new-name"}]
-                              [:QLineEdit {:objectName "new-val"}]
-                              [:QPushButton {:text "Add"
-                                             :clicked (fn [this]
-                                                        (msg "...")
-                                                        
-                                                        (set-form (symbol (.text (find-child this "new-name")))
-                                                                  (read-string (.text (find-child this "new-val"))))
-                                                        (shake 'ui))}]]])
-             (set-form 'make-ui! '(show-ui :11 ui)))))
+                              (for [i (range 10)]
+                                [:QPushButton {:text (str i)
+                                               :clicked (fn []
+                                                          (if current-op
+                                                            (set-val 'next-num (+ i (* 10 next-num)))
+                                                            (set-val 'current-num (+ i (* 10 current-num)))))}])]
+                             [:QHBoxLayout
+                              (for [op [#'+ #'-]]
+                                [:QPushButton {:text (-> op meta :name name)
+                                               :clicked
+                                               (fn []
+                                                 (set-val {'next-num 0
+                                                           'current-op op})
+                                                 )}])]
+                             [:QHBoxLayout
+                              [:QPushButton {:text "="
+                                             :clicked
+                                             (fn []
+                                               (when (and next-num
+                                                          current-op)
+                                                 (set-val 'current-num
+                                                          (current-op current-num next-num))
+                                                 (set-val 'next-num nil)
+                                                 (set-val 'current-op nil)))}]]
+                             [:QPushButton {:text "Clear"
+                                            :clicked
+                                            (fn []
+                                              (set-val {'current-num 0
+                                                        'next-num nil
+                                                        'current-op nil}))}
+                              ]])
+             (set-form 'make-ui! '(show-ui :145 ui)))))
+
 
 
 (def scratch-env (atom (Environment. {} {} {})))
@@ -786,32 +856,38 @@
 
 
 (swap! scratch-env set-val 'show-ui show-ui)
-(swap! scratch-env set-form 'make-ui! '(show-ui :scratch ui))
+(swap! scratch-env set-form 'make-ui! '(apply show-ui ui))
 
 (defmacro with-scratch [sym body]
   `(swap! scratch-env set-form (quote ~sym) (quote ~body)))
 
 
 
-(swap! scratch-env set-form 'ui '[:QVBoxLayout {:pos [720 0]
-                                                :size [650 650]}
-                                  [:QLabel {"text" "BootScratch!"}]
-                                  [:QCanvas
-                                   {:size [400 400]
-                                    :pos [20 20]
-                                    :objectName "canvas"
-                                    :shapes
-                                    [
-                                     [:scratch-block "set X to 7"
-                                      [:scratch-block "set X to 7"]
-                                      [:scratch-block "set X to 7"
-                                       [:scratch-block "set X to 7"]
-                                       [:scratch-block "set X to 7"]
-                                       [:scratch-block "set X to 7"]]
-                                      [:scratch-block "set X to 7"]]]}]]
+(swap! scratch-env set-form 'ui '[:scracth-take5kkk
+                                  [:QWidget {:pos [720 0]
+                                             :size [650 650]}
+                                   [:QCanvas {:shapes [[:drawRect 0 0 100 100]
+                                                       [:drawRect 0 0 20 20]
+                                                       [:drawRect 0 0 49 20]]
+                                              :size [200 200]}]
+                                   [:QScratchBlock {:text "alrightk"
+                                                    :objectName "scratch"
+                                                    :size [200 200]
+                                                    :pos [50 50]}
+                                    [:QScratchBlock {:text "next"}]
+                                    [:QScratchBlock {:text "lkj"}]]]]
        )
-(swap! scratch-env set-val 'radius 40)
 
+
+
+(ui/qt
+   (try
+     (let [scratch (.findChild (.window (first (:scracth-take5 @uis))) nil "scratch")]
+       (msg (.property scratch "text"))
+       (.setProperty scratch "text" "asdf")
+       (.setText scratch "text"))
+     (catch Exception e
+       (msg e))))
 
 (defn repaint-canvas []
   (ui/qt
