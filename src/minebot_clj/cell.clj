@@ -546,27 +546,24 @@
          (.adjustSize label))))))
 
 (declare set-property)
-(defn make-node [[btag bprops & bchildren :as current] parent index]
+(defn make-node [[btag bprops & bchildren :as current]]
   (cond
    (#{:QCanvas :QScratchBlock} btag)
    (let [constructor (get (ns-map (find-ns 'minebot-clj.cell)) (symbol (name btag)))
-         instance (constructor parent)]
+         instance (constructor)]
      (merge-props instance nil bprops)
      (merge-children instance nil bchildren)
-     (when (and parent (.layout parent))
-       (.insertWidget (.layout parent) index instance))
      instance)
 
 
    (#{:QVBoxLayout :QHBoxLayout} btag)
-   (let [instance (QWidget. parent)
+   (let [instance (QWidget.)
          class-name (str "com.trolltech.qt.gui." (name btag))
          constructor (.getConstructor (Class/forName class-name)
                                       (into-array Class [QWidget]))
          layout (.newInstance constructor
                               (to-array [instance]))]
-     (when (and parent (.layout parent))
-       (.insertWidget (.layout parent) index instance))
+
      (merge-props instance nil bprops)
      (merge-children instance nil bchildren)
      instance)
@@ -579,12 +576,10 @@
           constructor (.getConstructor (Class/forName class-name)
                                        (into-array Class [QWidget]))
           instance (.newInstance constructor
-                                 (to-array [parent]))]
+                                 (to-array [nil]))]
 
       (merge-props instance nil bprops)
       (merge-children instance nil bchildren)
-      (when (and parent (.layout parent))
-        (.insertWidget (.layout parent) index instance))
 
 
       instance)))
@@ -657,12 +652,19 @@
                         child))
         achildren (mapcat normalize-f achildren)
         bchildren (mapcat normalize-f bchildren)
-        child-nodes (filter #(.isWidgetType %) (.children parent))]
+        child-nodes (if-let [layout (and parent (.layout parent))]
+                      (doall (map #(.widget (.itemAt layout %))
+                                  (range (.count layout))))
+                        (filter #(.isWidgetType %) (.children parent)))]
     (doseq [i (range (max (count achildren) (count bchildren)))
             :let [achild (nth achildren i nil)
                   bchild (nth bchildren i nil)
-                  node (nth child-nodes i nil)]]
-      (merge-ui node parent achild bchild))))
+                  node (nth child-nodes i nil)
+                  new-node (merge-ui node achild bchild)]]
+      (when (and (nil? node) parent)
+        (.setParent new-node parent)
+        (when (.layout parent)
+          (.addWidget (.layout parent) new-node))))))
 
 (defn normalize-ui [ui]
   (if (or (nil? ui)
@@ -670,7 +672,7 @@
     ui
     (apply vector (first ui) {} (rest ui))))
 
-(defn merge-ui [node parent a b]
+(defn merge-ui [node a b]
   (let [a (normalize-ui a)
         b (normalize-ui b)
         [atag aprops & achildren] a
@@ -679,8 +681,8 @@
         (cond
          (nil? node)
          (do
-           (doto (make-node b parent -1)
-             (.show)))     
+           (doto (make-node b)
+             (.show)))
 
          (nil? b)
          (do
@@ -690,11 +692,19 @@
 
          (not= atag btag)
          (do
-           (let [old-idx (if (and parent (.layout parent))
-                           (.indexOf (.layout parent) node)
-                           -1)]
+           (let [new-node (make-node b)
+                 parent (.parent node)
+                 layout (when parent
+                          (.layout parent))
+                 index (when layout
+                         (.indexOf layout node))]
              (.setParent node nil)
-             (make-node b parent old-idx)))
+             (when parent
+               (.setParent new-node parent)
+               (when layout
+                 (.insertWidget layout index new-node)))
+             (.show new-node)
+             new-node))
 
          :else
          (do
@@ -713,7 +723,7 @@
      (let [work (fn []
                   (try
                     (let [[node old] (get @uis key)
-                          new-node (merge-ui node nil old ui)]
+                          new-node (merge-ui node old ui)]
                       (doto new-node
                         (.show))
                       (swap! uis assoc key [new-node ui]))
