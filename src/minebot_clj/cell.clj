@@ -632,7 +632,7 @@
   (doseq [[k v] bprops]
     (set-property node k v (get aprops k))))
 
-(declare merge-ui)
+(declare merge-ui!)
 (defn merge-children [parent achildren bchildren]
   (let [normalize-f (fn [child]
                       (if (vector? child)
@@ -648,7 +648,7 @@
             :let [achild (nth achildren i nil)
                   bchild (nth bchildren i nil)
                   node (nth child-nodes i nil)
-                  new-node (merge-ui node achild bchild)]]
+                  new-node (merge-ui! node achild bchild)]]
       (when (and (nil? node) parent)
         (.setParent new-node parent)
         (when (.layout parent)
@@ -660,7 +660,9 @@
     ui
     (apply vector (first ui) {} (rest ui))))
 
-(defn merge-ui [node a b]
+
+
+(defn merge-ui! [node a b]
   (let [a (normalize-ui a)
         b (normalize-ui b)
         [atag aprops & achildren] a
@@ -703,6 +705,12 @@
     ;; (.adjustSize new-node)
     new-node))
 
+;; Merge <type of thing you want> <resources, handles, state> <old val> <new val>
+;; (extend-type QWidget
+;;   IMergable
+;;   (-merge! [obj old new]
+;;     (merge-ui! obj old new)))
+
 (def uis (atom {}))
 
 (defn show-ui
@@ -712,7 +720,8 @@
      (let [work (fn []
                   (try
                     (let [[node old] (get @uis key)
-                          new-node (merge-ui node old ui)]
+                          new-node (merge-ui! node old ui)
+                          ]
                       (doto new-node
                         (.show))
                       (swap! uis assoc key [new-node ui]))
@@ -895,5 +904,4 @@
        (.repaint canvas))
      (catch Exception e
        (msg e)))))
-
 
