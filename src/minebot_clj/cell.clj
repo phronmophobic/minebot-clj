@@ -140,6 +140,15 @@
 (def core-syms (set (keys (ns-publics 'clojure.core))))
 
 
+;; Merge <type of thing you want> <resources, handles, state> <old val> <new val>
+;; (defprotocol IMergable
+;;   (-merge! [obj old-val new-val]
+    
+;;     ))
+
+
+;; (defn merge! [obj old new]
+;;   (-merge! obj old new))
 
 
 
@@ -699,6 +708,7 @@
                  index (when layout
                          (.indexOf layout node))]
              (.setParent node nil)
+             (.close node)
              (when parent
                (.setParent new-node parent)
                (when layout
