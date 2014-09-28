@@ -507,9 +507,9 @@
         (draw-shape painter shape-type args)))))
 
 
-(defn QCanvas [parent]
+(defn QCanvas []
   (let [shapes (atom nil)]
-    (proxy [QWidget IShaperDrawer] [parent]
+    (proxy [QWidget IShaperDrawer] []
       (shapes []
         @shapes)
       (setShapes [_shapes]
@@ -536,7 +536,7 @@
   (^String text [])
   (^void setText [^String text]))
 
-(defn QScratchBlock [parent]
+(defn QScratchBlock []
   (let [label (QLabel.)
         init (fn [block]
                (let [layout (QVBoxLayout.)]
@@ -547,51 +547,30 @@
                block)]
     
     (init
-     (proxy [QWidget IText] [parent]
+     (proxy [QWidget IText] []
        (text []
          (.text label))
        (setText [_text]
          (.setText label (str _text))
          (.adjustSize label))))))
 
+(defn QVBoxWidget []
+  (doto (QWidget.)
+    (.setLayout (QVBoxLayout.))))
+
+(defn QHBoxWidget []
+  (doto (QWidget.)
+    (.setLayout (QHBoxLayout.))))
+
 (declare set-property)
 (defn make-node [[btag bprops & bchildren :as current]]
-  (cond
-   (#{:QCanvas :QScratchBlock} btag)
-   (let [constructor (get (ns-map (find-ns 'minebot-clj.cell)) (symbol (name btag)))
-         instance (constructor)]
-     (merge-props instance nil bprops)
-     (merge-children instance nil bchildren)
-     instance)
-
-
-   (#{:QVBoxLayout :QHBoxLayout} btag)
-   (let [instance (QWidget.)
-         class-name (str "com.trolltech.qt.gui." (name btag))
-         constructor (.getConstructor (Class/forName class-name)
-                                      (into-array Class [QWidget]))
-         layout (.newInstance constructor
-                              (to-array [instance]))]
-
-     (merge-props instance nil bprops)
-     (merge-children instance nil bchildren)
-     instance)
-
-    :else
-    (let [class-name (str (if (= btag :QWebView)
-                            "com.trolltech.qt.webkit."
-                            "com.trolltech.qt.gui.") (name btag))
-        
-          constructor (.getConstructor (Class/forName class-name)
-                                       (into-array Class [QWidget]))
-          instance (.newInstance constructor
-                                 (to-array [nil]))]
-
-      (merge-props instance nil bprops)
-      (merge-children instance nil bchildren)
-
-
-      instance)))
+  (let [constructor (get (ns-map (find-ns 'minebot-clj.cell)) (symbol (name btag)))
+        instance (if (class? constructor)
+                   (.newInstance constructor)
+                   (constructor))]
+    (merge-props instance nil bprops)
+    (merge-children instance nil bchildren)
+    instance))
 
 
 
@@ -622,15 +601,15 @@
 
 (defmethod set-property :default [node property val old-val]
   (when (not= val old-val)
-   (let [pname (name property)]
-     (if (not= -1 (.indexOfProperty node pname))
-       (.setProperty node pname val)
-       (let [field (try (-> node class (.getField pname))
-                        (catch java.lang.NoSuchFieldException e))]
-         (if (and field
-                  (.startsWith (.getName (.getType field)) "com.trolltech.qt.QSignalEmitter$Signal"))
-           (ui/connect (.get field node) (my-partial1 val node))
-           (msg "got unknown property " property))))))
+    (let [pname (name property)]
+      (if (not= -1 (.indexOfProperty node pname))
+        (.setProperty node pname val)
+        (let [field (try (-> node class (.getField pname))
+                         (catch java.lang.NoSuchFieldException e))]
+          (if (and field
+                   (.startsWith (.getName (.getType field)) "com.trolltech.qt.QSignalEmitter$Signal"))
+            (ui/connect (.get field node) (my-partial1 val node))
+            (msg "got unknown property " property))))))
 )
 
 ;; (defmethod set-property :on-click [node property f]
