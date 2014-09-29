@@ -495,6 +495,45 @@
       (.restore painter)
       )))
 
+(defprotocol IChildren
+  (children [parent])
+  (append-child! [parent node])
+  (replace-child! [parent old-node new-node]))
+
+(extend-protocol IChildren
+  nil
+  (children [parent]
+    nil)
+  (append-child! [parent new-node]
+    (.show new-node)
+    new-node)
+  (replace-child! [parent old-node new-node]
+    (.show new-node)
+    new-node)
+
+  com.trolltech.qt.gui.QWidget
+  (children [parent]
+    (if-let [layout (.layout parent)]
+      (doall (map #(.widget (.itemAt layout %))
+                  (range (.count layout))))
+      (filter #(.isWidgetType %) (.children parent))))
+  (append-child! [parent new-node]
+    (.setParent new-node parent)
+    (when (.layout parent)
+      (.addWidget (.layout parent) new-node)))
+
+  (replace-child! [parent old-node new-node]
+    (let [layout (.layout parent)
+          index (when layout
+                  (.indexOf layout old-node))]
+      (.setParent old-node nil)
+      (.close old-node)
+      (.setParent new-node parent)
+      (when layout
+        (.insertWidget layout index new-node))
+      (.show new-node)
+      new-node)))
+
 (defmethod draw-shape :default [painter shape-type args]
   (clojure.lang.Reflector/invokeInstanceMethod
    painter (name shape-type) (to-array args)))
@@ -547,7 +586,30 @@
                block)]
     
     (init
-     (proxy [QWidget IText] []
+     (proxy [QWidget IText minebot_clj.cell.IChildren] []
+
+       (children [parent]
+         (msg "my children!")
+         (let [layout (.layout parent)]
+          (doall (map #(.widget (.itemAt layout %))
+                      (range 1 (.count layout))))))
+       (append-child! [parent new-node]
+         (.setParent new-node parent)
+         (when (.layout parent)
+           (.addWidget (.layout parent) new-node)))
+
+       (replace-child! [parent old-node new-node]
+         (let [layout (.layout parent)
+               index (when layout
+                       (.indexOf layout old-node))]
+           (.setParent old-node nil)
+           (.close old-node)
+           (.setParent new-node parent)
+           (when layout
+             (.insertWidget layout index new-node))
+           (.show new-node)
+           new-node))
+
        (text []
          (.text label))
        (setText [_text]
@@ -640,19 +702,14 @@
                         child))
         achildren (mapcat normalize-f achildren)
         bchildren (mapcat normalize-f bchildren)
-        child-nodes (if-let [layout (and parent (.layout parent))]
-                      (doall (map #(.widget (.itemAt layout %))
-                                  (range (.count layout))))
-                        (filter #(.isWidgetType %) (.children parent)))]
+        child-nodes (children parent)]
     (doseq [i (range (max (count achildren) (count bchildren)))
             :let [achild (nth achildren i nil)
                   bchild (nth bchildren i nil)
                   node (nth child-nodes i nil)
                   new-node (merge-ui! node achild bchild)]]
-      (when (and (nil? node) parent)
-        (.setParent new-node parent)
-        (when (.layout parent)
-          (.addWidget (.layout parent) new-node))))))
+      (when (nil? node)
+        (append-child! parent new-node)))))
 
 (defn normalize-ui [ui]
   (if (or (nil? ui)
@@ -683,18 +740,8 @@
          (not= atag btag)
          (do
            (let [new-node (make-node b)
-                 parent (.parent node)
-                 layout (when parent
-                          (.layout parent))
-                 index (when layout
-                         (.indexOf layout node))]
-             (.setParent node nil)
-             (.close node)
-             (when parent
-               (.setParent new-node parent)
-               (when layout
-                 (.insertWidget layout index new-node)))
-             (.show new-node)
+                 parent (.parent node)]
+             (replace-child! parent node new-node)
              new-node))
 
          :else
