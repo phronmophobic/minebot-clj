@@ -83,6 +83,7 @@
                                  )
            clojure.lang.Reflector
            com.trolltech.qt.gui.QPainter$RenderHints
+           com.trolltech.qt.gui.QPalette
            (com.trolltech.qt.core QCoreApplication
                                   QUrl
                                   QPoint
@@ -407,31 +408,6 @@
 
 
 
-(defn test []
-  (.execute
-   (.getNonBlockingMainQueueExecutor (com.apple.concurrent.Dispatch/getInstance))
-   (fn []
-     (msg "init")
-     (try
-       (reset! app (QCoreApplication/instance))
-       (when (not @app)
-         (ui/init))       
-       (reset! app (QCoreApplication/instance))
-       (let [dialog (QWidget.)
-             label (QLabel. "text" dialog)]
-         (connect (.aboutToQuit @app)
-                  (fn []))
-         (.show dialog)
-         (doto (QPushButton. "button" dialog)
-           (.show))
-         (msg (.children dialog))
-         (.exec @app)
-         (reset! app nil))
-                
-       (catch Exception e
-         (msg (with-out-str
-                (clojure.stacktrace/print-stack-trace e))))))))
-
 (declare merge-props merge-children)
 
 (defmacro with-painter [[painter paint-device] & body]
@@ -565,41 +541,300 @@
               (msg e))))
         nil))))
 
-;; (ScratchBlock [text children])
-
-;; (ScratchGroup [x y block])
-
-;; (ScratchArea [groups highlight select-group])
 
 (definterface IText
   (^String text [])
   (^void setText [^String text]))
 
-(defn QScratchBlock []
-  (let [label (QLabel.)
-        init (fn [block]
-               (let [layout (QVBoxLayout.)]
-                 (.setLayout block layout)
-                 (doto label
-                   (.setParent block)
-                   (.show)))
-               block)]
-    
-    (init
-     (proxy [QWidget IText minebot_clj.cell.IChildren] []
+(defprotocol IInit
+  (init [block]))
 
-       (children [parent]
-         (msg "my children!")
-         (let [layout (.layout parent)]
-          (doall (map #(.widget (.itemAt layout %))
-                      (range 1 (.count layout))))))
-       (append-child! [parent new-node]
-         (.setParent new-node parent)
-         (when (.layout parent)
-           (.addWidget (.layout parent) new-node)))
+(definterface ISubblocks
+  (subblocks []))
 
-       (replace-child! [parent old-node new-node]
-         (let [layout (.layout parent)
+(definterface IBlock)
+
+
+
+
+
+
+
+
+
+(defn QScratchArea []
+  (let [blocks (atom [])
+        selected (atom nil)
+        ]
+    (.init
+     (proxy [QWidget minebot_clj.cell.IInit ISubblocks] []
+
+       (init []
+         this)
+
+
+       (subblocks []
+         (mapcat #(.subblocks %) (children this)))
+
+       (mouseMoveEvent [event]
+         (when-let [selected @selected]
+           (let [[node [ox oy]] selected
+                 mpos (.pos event)]
+             (.move node (QPoint. (- (.x mpos) ox)
+                                  (- (.y mpos) oy))))))
+       (mousePressEvent [event]
+         (try
+          (let [subblocks (filter #(.underMouse %) (.subblocks this))
+                _ (msg "subcount " (count subblocks))
+                depth? (fn [node]
+                         (loop [node node
+                                depth 1]
+                           (if (= (.parent node) this)
+                             depth
+                             (if-let [parent (.parent node)]
+                               (recur parent (inc depth))
+                               0))))
+                node (loop [depth -1
+                            [block & rest] subblocks]
+                       (when block
+                         (let [new-depth (depth? block)]
+                           (if (and (>= new-depth depth) (seq rest))
+                             (recur new-depth rest)
+                             block))))
+                pos (.pos event)]
+            (msg "block " node)
+            (when node
+              (reset! selected [node [(- (.x pos) (.x node))
+                                      (- (.y pos) (.y node))]])))
+          (catch Exception e
+            (msg (with-out-str (clojure.stacktrace/print-stack-trace e))))))
+       (mouseReleaseEvent [event]
+         (reset! selected nil))))))
+
+
+
+
+(use 'minebot-clj.cwidget)
+
+;; (monkey
+;;  :name "MyLabel"
+;;  ;; :implements [java.util.Map]
+;;  :extends QLabel
+;;  ;; :state "state"
+;;  :load-impl-ns false
+;;  :init "init"
+;;  :prefix "my-widget-")
+
+;; (defn my-widget-init []
+;;   (msg "whooasdfdfs")
+;;   )
+
+;; (monkey
+;;  :name "QScratchBlock"
+;;  :extends QWidget
+;;  :load-impl-ns false
+;;  :prefix "qsb-"
+;;  :fields ["foo" "bar" "baz"]
+;;  :implements [IText minebot_clj.cell.IChildren minebot_clj.cell.IInit ISubblocks IBlock])
+
+;; (def version (atom 58))
+;; (do
+;;   (swap! version inc)
+;;   (let [cname (str "minebot_clj.cell.QScratchBlock" @version)
+;;         sclass
+;;         (monkey
+;;          :name cname
+;;          :extends QWidget
+;;          :load-impl-ns false
+;;          :prefix "qsb-"
+;;          :field-names [(with-meta 'somethingHappened
+;;                          {:class com.trolltech.qt.QSignalEmitter$Signal1})
+;;                        "label"]
+;;          ;; :init "myinit"
+
+;;          :post-init "post"
+;;          ;; :state 'yea
+;;          :implements [IText minebot_clj.cell.IChildren minebot_clj.cell.IInit ISubblocks IBlock])]
+;;     (defn QScratchBlock []
+;;       (.newInstance sclass))))
+
+;; (clojure.pprint/pprint
+;;  (macroexpand '))
+
+
+(defwidget QScratchBlock
+  [label]
+  [IText minebot_clj.cell.IChildren ISubblocks IBlock]
+  [[somethingHappened 1]
+   [jump 1]]
+
+  (init [this]
+    (let [block this
+          label (QLabel.)
+          layout (QVBoxLayout.)]
+      (.setLayout block layout)
+      (set! (. this label) label)
+      (doto label
+        (.setParent block)
+        (.show))))
+
+  
+  (block? [this]
+    true)
+
+  (subblocks [this]
+    (let [block? #(instance? IBlock %)]
+      (.emit (.somethingHappened this) "hello" )
+      (filter block?
+              (tree-seq block?
+                        #(.children %)
+                        this))))
+
+  (children [this]
+    (let [layout (.layout this)]
+      (doall (map #(.widget (.itemAt layout %))
+                  (range 0 (.count layout))))))
+
+  (append_child_BANG_ [this new-node]
+    (let [parent this]
+      (.setParent new-node parent)
+      (when (.layout parent)
+        (.addWidget (.layout parent) new-node))))
+
+  (replace_child_BANG_ [this old-node new-node]
+    (let [parent this
+          layout (.layout parent)
+          index (when layout
+                  (.indexOf layout old-node))]
+      (.setParent old-node nil)
+      (.close old-node)
+      (.setParent new-node parent)
+      (when layout
+        (.insertWidget layout index new-node))
+      (.show new-node)
+      new-node))
+
+  (text [this]
+    (.text (.label this)))
+  (setText [this _text]
+    (.setText (.label this) (str _text))
+    (.adjustSize (.label this))))
+
+
+
+
+
+
+
+
+
+
+
+
+;; (defn qsb-block? [this ]
+;;   true)
+
+;; (defn qsb-subblocks [this ]
+;;   (let [block? #(instance? IBlock %)]
+;;     (.emit (.somethingHappened this) "hello" )
+;;     (filter block?
+;;             (tree-seq block?
+;;                       #(.children %)
+;;                       this))))
+
+;; (defn qsb-children [this ]
+;;   (let [layout (.layout this)]
+;;     (doall (map #(.widget (.itemAt layout %))
+;;                 (range 0 (.count layout))))))
+
+;; (defn qsb-append_child_BANG_ [this new-node]
+;;   (let [parent this]
+;;     (.setParent new-node parent)
+;;     (when (.layout parent)
+;;       (.addWidget (.layout parent) new-node))))
+
+;; (defn qsb-replace_child_BANG_ [this old-node new-node]
+;;   (let [parent this
+;;         layout (.layout parent)
+;;         index (when layout
+;;                 (.indexOf layout old-node))]
+;;     (.setParent old-node nil)
+;;     (.close old-node)
+;;     (.setParent new-node parent)
+;;     (when layout
+;;       (.insertWidget layout index new-node))
+;;     (.show new-node)
+;;     new-node))
+
+;; (defn qsb-text [this]
+;;   (.text (.label this)))
+;; (defn qsb-setText [this _text]
+;;   (.setText (.label this) (str _text))
+;;   (.adjustSize (.label this)))
+
+;; (defn qsb-post [this]
+;;   (let [block this
+;;         label (QLabel.)
+;;         layout (QVBoxLayout.)]
+;;     (.setLayout block layout)
+;;     (set! (. this label) label)
+;;     (doto label
+;;       (.setParent block)
+;;       (.show))
+;;     block)
+;;   (let [signal (com.trolltech.qt.QSignalEmitter$Signal1. this)
+;;         types-field (.getDeclaredField com.trolltech.qt.internal.QSignalEmitterInternal$AbstractSignalInternal "types")
+;;         array-dimensions-field (.getDeclaredField com.trolltech.qt.internal.QSignalEmitterInternal$AbstractSignalInternal "arrayDimensions")]
+;;     (.setAccessible types-field true)
+;;     (.set types-field signal (into-array Class [Object]))
+
+;;     (.setAccessible array-dimensions-field true)
+;;     (.set array-dimensions-field signal (int-array [0]))
+
+;;     (set! (. this somethingHappened) signal))
+;;   this)
+
+
+
+
+#_(defn QScratchBlock []
+  (let [label (QLabel.)]
+    (.init
+     (proxy [QWidget IText minebot_clj.cell.IChildren minebot_clj.cell.IInit ISubblocks IBlock] []
+       (init []
+         (let [block this
+               layout (QVBoxLayout.)]
+           (.setLayout block layout)
+           (doto label
+             (.setParent block)
+             (.show))
+           block))
+
+       (block? []
+         true)
+
+       (subblocks []
+         (let [block? #(instance? IBlock %)
+               ]
+           (filter block?
+                   (tree-seq block?
+                             #(.children %)
+                             this))))
+
+       (children []
+         (let [layout (.layout this)]
+           (doall (map #(.widget (.itemAt layout %))
+                       (range 0 (.count layout))))))
+
+       (append_child_BANG_ [new-node]
+         (let [parent this]
+           (.setParent new-node parent)
+           (when (.layout parent)
+             (.addWidget (.layout parent) new-node))))
+
+       (replace_child_BANG_ [old-node new-node]
+         (let [parent this
+               layout (.layout parent)
                index (when layout
                        (.indexOf layout old-node))]
            (.setParent old-node nil)
@@ -640,6 +875,16 @@
 (defmethod set-property :pos [node property [x y :as new-val] old-val]
   (when (not= new-val old-val)
     (.setProperty node "pos" (QPoint. x y))))
+
+(defmethod set-property :background-color [node property [r g b :as new-val] old-val]
+  (when (not= new-val old-val)
+    (let [palette (QPalette.)
+          color (com.trolltech.qt.gui.QColor. r g b)]
+      (.setColor palette com.trolltech.qt.gui.QPalette$ColorRole/Window color)
+      (.setAutoFillBackground node true)
+      (.setPalette node palette))
+    
+))
 
 (defmethod set-property :size [node property [x y :as size] old-val]
   (if (nil? size)
@@ -935,14 +1180,6 @@
 
 
 
-(ui/qt
-   (try
-     (let [scratch (.findChild (.window (first (:scracth-take5 @uis))) nil "scratch")]
-       (msg (.property scratch "text"))
-       (.setProperty scratch "text" "asdf")
-       (.setText scratch "text"))
-     (catch Exception e
-       (msg e))))
 
 (defn repaint-canvas []
   (ui/qt
@@ -952,3 +1189,44 @@
      (catch Exception e
        (msg e)))))
 
+(ui/qt
+ (try
+     (let [start (.findChild (.window (first (:sb22899889999kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk @uis))) nil "start")]
+       (msg (map type (.children start)))
+       #_(msg (count (filter #(instance? IBlock %) (.children start)))))
+     (catch Exception e
+       (msg e)))
+ )
+
+
+
+(show-ui :sb15kkkkllklllllllllll
+         [:QWidget {:pos [100 0]
+                    :size nil}
+          [:QScratchArea {:pos [0 0]
+                     :size [400 400]}
+
+           [:QScratchBlock 
+            {:text "yo", :pos [5 20], :background-color [100 50 0]
+             :objectName "start"
+             :somethingHappened (fn [this s]
+                                  (msg "something happened!" s))
+             }
+            [:QScratchBlock
+            {:text "yo", :pos [5 40], :background-color [100 100 0]}]
+            [:QScratchBlock
+            {:text "yo", :pos [5 40], :background-color [100 100 0]}]
+            [:QScratchBlock
+            {:text "yo", :pos [5 40], :background-color [100 100 0]}]
+            [:QScratchBlock
+            {:text "yo", :pos [5 40], :background-color [100 100 0]}]
+            [:QScratchBlock
+            {:text "yo", :pos [5 40], :background-color [100 100 0]}]]
+           
+            [:QScratchBlock
+             {:text "yo", :pos [5 60], :background-color [100 150 0]}]
+           [:QScratchBlock
+            {:text "yo", :pos [5 80], :background-color [100 200 0]}]
+
+           
+           ]])
