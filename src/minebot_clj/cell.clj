@@ -11,6 +11,7 @@
             [minebot-clj.analyze :refer [cell-deps]]
             clj-http.client
             net.cgrand.enlive-html
+            [minebot-clj.cwidget :refer [defwidget]]
             )
   (:import (com.trolltech.qt.gui QApplication QPushButton
                                  ;; Checkbox with a text label
@@ -612,56 +613,6 @@
          (reset! selected nil))))))
 
 
-
-
-(use 'minebot-clj.cwidget)
-
-;; (monkey
-;;  :name "MyLabel"
-;;  ;; :implements [java.util.Map]
-;;  :extends QLabel
-;;  ;; :state "state"
-;;  :load-impl-ns false
-;;  :init "init"
-;;  :prefix "my-widget-")
-
-;; (defn my-widget-init []
-;;   (msg "whooasdfdfs")
-;;   )
-
-;; (monkey
-;;  :name "QScratchBlock"
-;;  :extends QWidget
-;;  :load-impl-ns false
-;;  :prefix "qsb-"
-;;  :fields ["foo" "bar" "baz"]
-;;  :implements [IText minebot_clj.cell.IChildren minebot_clj.cell.IInit ISubblocks IBlock])
-
-;; (def version (atom 58))
-;; (do
-;;   (swap! version inc)
-;;   (let [cname (str "minebot_clj.cell.QScratchBlock" @version)
-;;         sclass
-;;         (monkey
-;;          :name cname
-;;          :extends QWidget
-;;          :load-impl-ns false
-;;          :prefix "qsb-"
-;;          :field-names [(with-meta 'somethingHappened
-;;                          {:class com.trolltech.qt.QSignalEmitter$Signal1})
-;;                        "label"]
-;;          ;; :init "myinit"
-
-;;          :post-init "post"
-;;          ;; :state 'yea
-;;          :implements [IText minebot_clj.cell.IChildren minebot_clj.cell.IInit ISubblocks IBlock])]
-;;     (defn QScratchBlock []
-;;       (.newInstance sclass))))
-
-;; (clojure.pprint/pprint
-;;  (macroexpand '))
-
-
 (defwidget QScratchBlock
   [label]
   [IText minebot_clj.cell.IChildren ISubblocks IBlock]
@@ -720,136 +671,6 @@
     (.setText (.label this) (str _text))
     (.adjustSize (.label this))))
 
-
-
-
-
-
-
-
-
-
-
-
-;; (defn qsb-block? [this ]
-;;   true)
-
-;; (defn qsb-subblocks [this ]
-;;   (let [block? #(instance? IBlock %)]
-;;     (.emit (.somethingHappened this) "hello" )
-;;     (filter block?
-;;             (tree-seq block?
-;;                       #(.children %)
-;;                       this))))
-
-;; (defn qsb-children [this ]
-;;   (let [layout (.layout this)]
-;;     (doall (map #(.widget (.itemAt layout %))
-;;                 (range 0 (.count layout))))))
-
-;; (defn qsb-append_child_BANG_ [this new-node]
-;;   (let [parent this]
-;;     (.setParent new-node parent)
-;;     (when (.layout parent)
-;;       (.addWidget (.layout parent) new-node))))
-
-;; (defn qsb-replace_child_BANG_ [this old-node new-node]
-;;   (let [parent this
-;;         layout (.layout parent)
-;;         index (when layout
-;;                 (.indexOf layout old-node))]
-;;     (.setParent old-node nil)
-;;     (.close old-node)
-;;     (.setParent new-node parent)
-;;     (when layout
-;;       (.insertWidget layout index new-node))
-;;     (.show new-node)
-;;     new-node))
-
-;; (defn qsb-text [this]
-;;   (.text (.label this)))
-;; (defn qsb-setText [this _text]
-;;   (.setText (.label this) (str _text))
-;;   (.adjustSize (.label this)))
-
-;; (defn qsb-post [this]
-;;   (let [block this
-;;         label (QLabel.)
-;;         layout (QVBoxLayout.)]
-;;     (.setLayout block layout)
-;;     (set! (. this label) label)
-;;     (doto label
-;;       (.setParent block)
-;;       (.show))
-;;     block)
-;;   (let [signal (com.trolltech.qt.QSignalEmitter$Signal1. this)
-;;         types-field (.getDeclaredField com.trolltech.qt.internal.QSignalEmitterInternal$AbstractSignalInternal "types")
-;;         array-dimensions-field (.getDeclaredField com.trolltech.qt.internal.QSignalEmitterInternal$AbstractSignalInternal "arrayDimensions")]
-;;     (.setAccessible types-field true)
-;;     (.set types-field signal (into-array Class [Object]))
-
-;;     (.setAccessible array-dimensions-field true)
-;;     (.set array-dimensions-field signal (int-array [0]))
-
-;;     (set! (. this somethingHappened) signal))
-;;   this)
-
-
-
-
-#_(defn QScratchBlock []
-  (let [label (QLabel.)]
-    (.init
-     (proxy [QWidget IText minebot_clj.cell.IChildren minebot_clj.cell.IInit ISubblocks IBlock] []
-       (init []
-         (let [block this
-               layout (QVBoxLayout.)]
-           (.setLayout block layout)
-           (doto label
-             (.setParent block)
-             (.show))
-           block))
-
-       (block? []
-         true)
-
-       (subblocks []
-         (let [block? #(instance? IBlock %)
-               ]
-           (filter block?
-                   (tree-seq block?
-                             #(.children %)
-                             this))))
-
-       (children []
-         (let [layout (.layout this)]
-           (doall (map #(.widget (.itemAt layout %))
-                       (range 0 (.count layout))))))
-
-       (append_child_BANG_ [new-node]
-         (let [parent this]
-           (.setParent new-node parent)
-           (when (.layout parent)
-             (.addWidget (.layout parent) new-node))))
-
-       (replace_child_BANG_ [old-node new-node]
-         (let [parent this
-               layout (.layout parent)
-               index (when layout
-                       (.indexOf layout old-node))]
-           (.setParent old-node nil)
-           (.close old-node)
-           (.setParent new-node parent)
-           (when layout
-             (.insertWidget layout index new-node))
-           (.show new-node)
-           new-node))
-
-       (text []
-         (.text label))
-       (setText [_text]
-         (.setText label (str _text))
-         (.adjustSize label))))))
 
 (defn QVBoxWidget []
   (doto (QWidget.)
