@@ -12,6 +12,7 @@
             clj-http.client
             net.cgrand.enlive-html
             [minebot-clj.cwidget :refer [defwidget]]
+            [clojure.zip :as z]
             )
   (:import (com.trolltech.qt.gui QApplication QPushButton
                                  ;; Checkbox with a text label
@@ -130,6 +131,32 @@
       (string? x)
       (instance? java.util.Map x)))
 
+(defn myzip [root]
+  (z/zipper #(or (vector? %)
+                 (seq? %)
+                 (map? %))
+            seq
+            (fn [coll c]
+              (cond
+               (instance? clojure.lang.MapEntry coll)
+               (clojure.lang.MapEntry. (first c) (second c))
+               (seq? coll)
+               c
+               :else
+               (into (empty coll) c)))
+            root))
+
+
+(defn zseq [zip]
+  (if zip
+    (cons zip
+          (lazy-seq
+           (when-let [right (z/right zip)]
+             (zseq right))))))
+(defn zchildren [zip]
+  (zseq (z/down zip)))
+
+
 
 (defprotocol IEnvironment
   (set-form
@@ -206,6 +233,8 @@
                          ~form)
               newval (try
                        (let [ns (create-ns nsym)]
+                         (eval '(require '[clojure.zip :as z]))
+                         (eval '(import 'com.trolltech.qt.core.QPoint))
                          (doseq [arg args]
                            (intern ns arg (get vals arg)))
                          (eval to-eval))
@@ -497,7 +526,8 @@
   (append-child! [parent new-node]
     (.setParent new-node parent)
     (when (.layout parent)
-      (.addWidget (.layout parent) new-node)))
+      (.addWidget (.layout parent) new-node))
+    (.show new-node))
 
   (replace-child! [parent old-node new-node]
     (let [layout (.layout parent)
@@ -547,6 +577,10 @@
   (^String text [])
   (^void setText [^String text]))
 
+(definterface ISelectBlockId
+  (^String selectedBlockId [])
+  (^void setSelectedBlockId [^String block-id]))
+
 (defprotocol IInit
   (init [block]))
 
@@ -557,61 +591,59 @@
 
 
 
+(defwidget QScratchArea
+  [_selectedBlockId]
+  [ISubblocks ISelectBlockId]
+  [[blockSelected 1]
+   [selectedBlockMoved 1]]
 
+  (^Object selectedBlockId [this]
+    (. this _selectedBlockId))
+  (^void setSelectedBlockId [this ^Object block-id]
+    (set! (. this _selectedBlockId)
+          (if (= "" block-id)
+            nil
+            block-id)))
 
+  (subblocks [this]
+    (mapcat #(.subblocks %) (children this)))
 
+  (mouseMoveEvent [this event]
+    (when (. this _selectedBlockId)
+      (let [mpos (.pos event)]
+        (.emit (.selectedBlockMoved this)
+               [(.x mpos)
+                (.y mpos) ]))))
 
-
-
-(defn QScratchArea []
-  (let [blocks (atom [])
-        selected (atom nil)
-        ]
-    (.init
-     (proxy [QWidget minebot_clj.cell.IInit ISubblocks] []
-
-       (init []
-         this)
-
-
-       (subblocks []
-         (mapcat #(.subblocks %) (children this)))
-
-       (mouseMoveEvent [event]
-         (when-let [selected @selected]
-           (let [[node [ox oy]] selected
-                 mpos (.pos event)]
-             (.move node (QPoint. (- (.x mpos) ox)
-                                  (- (.y mpos) oy))))))
-       (mousePressEvent [event]
-         (try
-          (let [subblocks (filter #(.underMouse %) (.subblocks this))
-                _ (msg "subcount " (count subblocks))
-                depth? (fn [node]
-                         (loop [node node
-                                depth 1]
-                           (if (= (.parent node) this)
-                             depth
-                             (if-let [parent (.parent node)]
-                               (recur parent (inc depth))
-                               0))))
-                node (loop [depth -1
-                            [block & rest] subblocks]
-                       (when block
-                         (let [new-depth (depth? block)]
-                           (if (and (>= new-depth depth) (seq rest))
-                             (recur new-depth rest)
-                             block))))
-                pos (.pos event)]
-            (msg "block " node)
-            (when node
-              (reset! selected [node [(- (.x pos) (.x node))
-                                      (- (.y pos) (.y node))]])))
-          (catch Exception e
-            (msg (with-out-str (clojure.stacktrace/print-stack-trace e))))))
-       (mouseReleaseEvent [event]
-         (reset! selected nil))))))
-
+  (mousePressEvent [this event]
+    (try
+      (let [subblocks (filter #(.underMouse %) (.subblocks this))
+            depth? (fn [node]
+                     (loop [node node
+                            depth 1]
+                       (if (= (.parent node) this)
+                         depth
+                         (if-let [parent (.parent node)]
+                           (recur parent (inc depth))
+                           0))))
+            node (loop [depth -1
+                        [block & rest] subblocks]
+                   (when block
+                     (let [new-depth (depth? block)]
+                       (if (and (>= new-depth depth) (seq rest))
+                         (recur new-depth rest)
+                         block))))
+            pos (.pos event)]
+        (when node
+         (.emit (.blockSelected this) (.objectName node))
+         (.emit (.selectedBlockMoved this) [(- (.x pos) (.x node))
+                                            (- (.y pos) (.y node))])))
+      (catch Exception e
+        (msg (with-out-str (clojure.stacktrace/print-stack-trace e))))))
+  (mouseReleaseEvent [this event]
+    (.emit (.blockSelected this) nil)
+    ;; (reset! selected nil)
+    ))
 
 (defwidget QScratchBlock
   [label]
@@ -629,6 +661,10 @@
         (.setParent block)
         (.show))))
 
+
+  (childEvent [this event]
+    (when  (.added event)
+      (.adjustSize this)))
   
   (block? [this]
     true)
@@ -681,36 +717,40 @@
     (.setLayout (QHBoxLayout.))))
 
 (declare set-property)
-(defn make-node [[btag bprops & bchildren :as current]]
-  (let [constructor (get (ns-map (find-ns 'minebot-clj.cell)) (symbol (name btag)))
+(defn make-node [zui]
+  (let [[btag bprops & bchildren :as current] (z/node zui)
+        constructor (get (ns-map (find-ns 'minebot-clj.cell)) (symbol (name btag)))
         instance (if (class? constructor)
                    (.newInstance constructor)
                    (constructor))]
-    (merge-props instance nil bprops)
-    (merge-children instance nil bchildren)
+    (merge-props instance nil (-> zui z/down z/right))
+    (merge-children instance nil (-> zui z/down z/right z/right zseq))
     instance))
 
 
 
-(defmulti set-property (fn [node property value old-val] property))
-(defmethod set-property :pos [node property [x y :as new-val] old-val]
-  (when (not= new-val old-val)
-    (.setProperty node "pos" (QPoint. x y))))
+(defmulti set-property (fn [node kv old-val] (-> kv z/down z/node)))
+(defmethod set-property :pos [node kv old-val]
+  (let [[property [x y :as new-val]] (z/node kv)]
+    (when (not= new-val old-val)
+      (.setProperty node "pos" (QPoint. x y)))))
 
-(defmethod set-property :background-color [node property [r g b :as new-val] old-val]
-  (when (not= new-val old-val)
-    (let [palette (QPalette.)
-          color (com.trolltech.qt.gui.QColor. r g b)]
-      (.setColor palette com.trolltech.qt.gui.QPalette$ColorRole/Window color)
-      (.setAutoFillBackground node true)
-      (.setPalette node palette))
+(defmethod set-property :background-color [node kv old-val]
+  (let [[property [r g b :as new-val]] (z/node kv)]
+    (when (not= new-val old-val)
+      (let [palette (QPalette.)
+            color (com.trolltech.qt.gui.QColor. r g b)]
+        (.setColor palette com.trolltech.qt.gui.QPalette$ColorRole/Window color)
+        (.setAutoFillBackground node true)
+        (.setPalette node palette))
     
-))
+      )))
 
-(defmethod set-property :size [node property [x y :as size] old-val]
-  (if (nil? size)
-    (.adjustSize node)
-    (.setProperty node "size" (QSize. x y))))
+(defmethod set-property :size [node kv old-val]
+  (let [[property [x y :as size]] (z/node kv)]
+    (if (nil? size)
+      (.adjustSize node)
+      (.setProperty node "size" (QSize. x y)))))
 
 
 (defn arg-count [f]
@@ -727,17 +767,20 @@
     4 (fn [arg2 arg3 arg4] (f arg1 arg2 arg3 arg4))))
 
 
-(defmethod set-property :default [node property val old-val]
-  (when (not= val old-val)
-    (let [pname (name property)]
-      (if (not= -1 (.indexOfProperty node pname))
-        (.setProperty node pname val)
-        (let [field (try (-> node class (.getField pname))
-                         (catch java.lang.NoSuchFieldException e))]
-          (if (and field
-                   (.startsWith (.getName (.getType field)) "com.trolltech.qt.QSignalEmitter$Signal"))
-            (ui/connect (.get field node) (my-partial1 val node))
-            (msg "got unknown property " property))))))
+(defmethod set-property :default [node kv old-val]
+  (let [[property val] (z/node kv)]
+    (when (not= val old-val)
+      (let [pname (name property)]
+        (if (not= -1 (.indexOfProperty node pname))
+          (do
+            (.setProperty node pname val))
+          (let [field (try (-> node class (.getField pname))
+                           (catch java.lang.NoSuchFieldException e))]
+            (if (and field
+                     (.startsWith (.getName (.getType field)) "com.trolltech.qt.QSignalEmitter$Signal"))
+              (ui/connect (.get field node) (my-partial1 val (vary-meta (-> kv z/up z/up)
+                                                                        assoc :node node)))
+              (msg "got unknown property " property)))))))
 )
 
 ;; (defmethod set-property :on-click [node property f]
@@ -749,71 +792,75 @@
 ;; (defmethod set-property :on-return-pressed [node property f]
 ;;   (ui/connect (.returnPressed node) (partial f node)))
 
-#_(defmethod set-property :x [node property x]
-  )
 
-(defn merge-props [node aprops bprops]
-  (when (seq (clojure.set/difference (set (keys aprops))
-                                 (set (keys bprops))))
-    (msg "don't know how to handle deleting prop keys"))
-  (.disconnect node)
-  (doseq [[k v] bprops]
-    (set-property node k v (get aprops k))))
+(defn merge-props [node aprops zbprops]
+  (let [bprops (z/node zbprops)]
+    (when-let [bad-keys (seq (clojure.set/difference (set (keys aprops))
+                                             (set (keys bprops))))]
+      (msg "don't know how to handle deleting prop" bad-keys))
+    (.disconnect node)
+    (doseq [kv (zchildren zbprops)
+            :let [k (-> kv z/down z/node)]]
+      (set-property node kv (get aprops k)))))
+
+(defn flatten-seqs [x]
+  (filter (complement seq?)
+          (rest (tree-seq seq? seq (seq x)))))
 
 (declare merge-ui!)
-(defn merge-children [parent achildren bchildren]
-  (let [normalize-f (fn [child]
-                      (if (vector? child)
-                        [child]
-                        child))
-        achildren (mapcat normalize-f achildren)
-        bchildren (mapcat normalize-f bchildren)
+(defn merge-children [parent achildren zbchildren]
+  (let [achildren achildren
         child-nodes (children parent)]
-    (doseq [i (range (max (count achildren) (count bchildren)))
+    (doseq [i (range (max (count achildren) (count zbchildren)))
             :let [achild (nth achildren i nil)
-                  bchild (nth bchildren i nil)
+                  zbchild (nth zbchildren i nil)
                   node (nth child-nodes i nil)
-                  new-node (merge-ui! node achild bchild)]]
+                  new-node (merge-ui! node
+                                      achild zbchild)]]
       (when (nil? node)
         (append-child! parent new-node)))))
 
 (defn normalize-ui [ui]
-  (if (or (nil? ui)
-          (map? (second ui)))
-    ui
-    (apply vector (first ui) {} (rest ui))))
+  (cond
+   (nil? ui)
+   nil
+   (map? (second ui))
+   (apply vector (first ui) (second ui) (flatten-seqs (nthrest ui 2)))
+   :else
+   (apply vector (first ui) {} (flatten-seqs (rest ui)))))
 
 
-
-(defn merge-ui! [node a b]
+(defn merge-ui! [node a zb]
   (let [a (normalize-ui a)
-        b (normalize-ui b)
+        zb (and zb (z/edit zb normalize-ui))
+        b (and zb (z/node zb))
         [atag aprops & achildren] a
         [btag bprops & bchildren] b
         new-node
         (cond
          (nil? node)
          (do
-           (doto (make-node b)
+           (doto (make-node zb)
              (.show)))
 
          (nil? b)
          (do
            (when node
              (doto node
-               (.setParent nil))))
+               (.setParent nil)
+               (.close))))
 
          (not= atag btag)
          (do
-           (let [new-node (make-node b)
+           (let [new-node (make-node zb)
                  parent (.parent node)]
              (replace-child! parent node new-node)
              new-node))
 
          :else
          (do
-           (merge-props node aprops bprops)
-           (merge-children node achildren bchildren)
+           (merge-props node aprops (and zb (-> zb z/down z/right)))
+           (merge-children node achildren (and zb (-> zb z/down z/right z/right zseq)))
            node))]
     ;; (.adjustSize new-node)
     new-node))
@@ -833,7 +880,8 @@
      (let [work (fn []
                   (try
                     (let [[node old] (get @uis key)
-                          new-node (merge-ui! node old ui)
+                          new-node (merge-ui! node
+                                              old (myzip ui))
                           ]
                       (doto new-node
                         (.show))
@@ -960,14 +1008,13 @@
 
 
 (def scratch-env (atom (Environment. {} {} {})))
+(defmacro with-scratch [sym body]
+  `(swap! scratch-env set-form (quote ~sym) (quote ~body)))
 
-(swap! scratch-env set-val 'text "")
 (swap! scratch-env set-val 'env-vals (fn []
                                 (:vals @scratch-env)))
 (swap! scratch-env set-val 'set-val #(swap!
                                scratch-env set-val %1 %2))
-(swap! scratch-env set-val 'truncates (fn [s n]
-                                 (subs s 0 (min n (count s)))))
 (swap! scratch-env set-val 'find-child (fn [ref name]
                                   (.findChild (.window ref) nil name)))
 (swap! scratch-env set-val 'msg msg)
@@ -978,27 +1025,118 @@
 
 (swap! scratch-env set-val 'show-ui show-ui)
 (swap! scratch-env set-form 'make-ui! '(apply show-ui ui))
+(swap! scratch-env set-val 'normalize-ui normalize-ui)
+(swap! scratch-env set-val 'myzip myzip)
+(swap! scratch-env set-val 'zseq zseq)
 
-(defmacro with-scratch [sym body]
-  `(swap! scratch-env set-form (quote ~sym) (quote ~body)))
 
 
+(swap! scratch-env set-val 'blocks
+       [[:QScratchBlock {:text "alpha"
+                         :objectName "alpha"
+                         :pos [100 100]
+                         :background-color [255 255 255]}]
+        [:QScratchBlock {:text "beta"
+                         :objectName "beta"
+                         :pos [100 210]
+                         :background-color [0 255 255]}
+         [:QScratchBlock {:text "charlie"
+                          :objectName "charlie"
+                          :pos [100 210]
+                          :background-color [0 0 255]}]
+         [:QScratchBlock {:text "dingo"
+                          :objectName "dingo"
+                          :pos [100 210]
+                          :background-color [0 255 0]}]]])
+(swap! scratch-env set-val 'selected-block-id nil)
 
-(swap! scratch-env set-form 'ui '[:scracth-take5kkk
-                                  [:QWidget {:pos [720 0]
-                                             :size [650 650]}
-                                   [:QCanvas {:shapes [[:drawRect 0 0 100 100]
-                                                       [:drawRect 0 0 20 20]
-                                                       [:drawRect 0 0 49 20]]
-                                              :size [200 200]}]
-                                   [:QScratchBlock {:text "alrightk"
-                                                    :objectName "scratch"
-                                                    :size [200 200]
-                                                    :pos [50 50]}
-                                    [:QScratchBlock {:text "next"}]
-                                    [:QScratchBlock {:text "lkj"}]]]]
-       )
 
+(swap! scratch-env set-form 'ui
+       '[:scratch2378998lksolllllllklllllllll
+         [:QVBoxWidget {:size [ 400 800]
+                        :pos [750 20]
+                        }
+                                   
+          [:QScratchArea {:background-color [0 0 100]
+                          :selectedBlockId (if selected-block-id
+                                             selected-block-id
+                                             "")
+                          :blockSelected
+                          (fn [area block-id]
+
+                            (set-val 'selected-block-id block-id))
+                          :selectedBlockMoved
+                          (fn [area [x y]]
+                            (try
+                              (let [blocks (myzip
+                                            blocks)
+                                    find-block (fn find-block [node selected-block-id]
+                                                 (when node
+                                                   (let [[tag props & children :as b] (normalize-ui (z/node node))]
+                                                     (if (= selected-block-id (:objectName props))
+                                                       node
+                                                       (or (some #(find-block % selected-block-id) (-> node z/down z/right z/right zseq))
+                                                           (find-block (z/right node) selected-block-id))))))
+                                    zblock (find-block (z/down blocks) selected-block-id)]
+                                (when zblock
+                                  (let [block (-> (z/node zblock)
+                                                  (assoc-in [1 :pos] [x y]))
+                                        blocks (-> zblock z/remove
+                                                   z/root
+                                                   myzip)
+                                        area-node (-> area meta :node)
+                                        gp (.mapToGlobal area-node (QPoint. x y))
+                                        new-parent-node (first
+                                                         (filter #(and (not= (.objectName %) selected-block-id)
+                                                                       (let [local (.mapFromGlobal % gp)
+                                                                             lx (.x local)
+                                                                             ly (.y local)
+                                                                             width (.width %)
+                                                                             height (.height %)]
+                                                                         (and (pos? lx)
+                                                                              (pos? ly)
+                                                                              (< lx width)
+                                                                              (< ly height)))
+                                                                       (not (.isAncestorOf %
+                                                                                           (.findChild area-node
+                                                                                                       nil
+                                                                                                       selected-block-id)))
+)
+                                                                 (.subblocks area-node)))
+                                        zparent (when (and new-parent-node
+                                                           (.objectName new-parent-node))
+                                                  (find-block (z/down blocks) (.objectName new-parent-node)))
+                                        blocks (cond
+                                                zparent
+                                                (-> zparent
+                                                     (z/edit normalize-ui)
+                                                     z/down
+                                                     z/right
+                                                     (z/insert-right block)
+                                                     z/root)
+                                                (seq (z/node blocks))
+                                                (-> blocks
+                                                     z/down
+                                                     (z/insert-left block)
+                                                     z/root)
+                                                :else
+                                                [block])]
+                                    (set-val 'blocks
+                                             blocks))))
+                              (catch Exception e
+                                (msg e)))
+                            )}
+           (for [block blocks]
+             block)]]])
+
+(swap! scratch-env set-form 'debug-ui
+       '(show-ui :debug-ui
+                 [:QVBoxWidget {:size nil}
+                  [:QTextEdit {:size nil
+                               :plainText
+                               (with-out-str
+                                 (clojure.pprint/pprint
+                                  blocks))}]]))
 
 
 
@@ -1012,8 +1150,8 @@
 
 (ui/qt
  (try
-     (let [start (.findChild (.window (first (:sb22899889999kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk @uis))) nil "start")]
-       (msg (map type (.children start)))
+   (let [widget (.window (first (:lost-children800 @uis)))]
+       (msg (seq (.children widget)))
        #_(msg (count (filter #(instance? IBlock %) (.children start)))))
      (catch Exception e
        (msg e)))
@@ -1021,33 +1159,5 @@
 
 
 
-(show-ui :sb15kkkkllklllllllllll
-         [:QWidget {:pos [100 0]
-                    :size nil}
-          [:QScratchArea {:pos [0 0]
-                     :size [400 400]}
 
-           [:QScratchBlock 
-            {:text "yo", :pos [5 20], :background-color [100 50 0]
-             :objectName "start"
-             :somethingHappened (fn [this s]
-                                  (msg "something happened!" s))
-             }
-            [:QScratchBlock
-            {:text "yo", :pos [5 40], :background-color [100 100 0]}]
-            [:QScratchBlock
-            {:text "yo", :pos [5 40], :background-color [100 100 0]}]
-            [:QScratchBlock
-            {:text "yo", :pos [5 40], :background-color [100 100 0]}]
-            [:QScratchBlock
-            {:text "yo", :pos [5 40], :background-color [100 100 0]}]
-            [:QScratchBlock
-            {:text "yo", :pos [5 40], :background-color [100 100 0]}]]
-           
-            [:QScratchBlock
-             {:text "yo", :pos [5 60], :background-color [100 150 0]}]
-           [:QScratchBlock
-            {:text "yo", :pos [5 80], :background-color [100 200 0]}]
 
-           
-           ]])
