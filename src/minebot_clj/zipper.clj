@@ -1,92 +1,83 @@
 (ns minebot-clj.zipper)
 
 
-(defprotocol IZipper
-  (zup [this])
-  (zdown [this to from])
-  (zpeek [this])
-  (zremove [this])
-  (zreplace [this val]))
-
-(declare znth zseq)
-(deftype Zipper [x path #_ changed?]
-  
-  clojure.lang.Seqable
-  (seq [this]
-    (map #(znth (zseq this) %) (range (count x))))
-
-  IZipper
-  (zpeek [this]
-    x)
-  (zremove [this]
-    )
-  (zreplace [this val]
-    (Zipper. val path))
-  (zup [this]
-    (when path
-      (let [[from & path] path]
-        (Zipper. (from x) path))))
-  (zdown [this to from]
-    (Zipper. (to x) (conj path (partial from x)))))
-
-(defn zipper [obj]
-  (Zipper. obj nil))
-
 (defn zip [obj]
-  (Zipper. obj nil))
+  [obj nil])
 
-(defn zedit [zm f & args]
-  (zreplace zm (apply f (zpeek zm) args)))
+(defn zget [[obj path] k]
+  [(get obj k) (conj path [:get obj k])])
 
-(defn zroot [zm]
-  (loop [zm zm]
-    (if-let [up (zup zm)]
-      (recur up)
-      zm)))
+(defn znth [[obj path] i]
+  [(nth obj i) (conj path [:nth obj i])])
+
+
+(defmulti back (fn [type & args]
+                 type))
+
+(defmethod back :get [_ old-val new-val k]
+  (assoc old-val k new-val))
+
+(defmethod back :nth [_ old-val new-val i]
+  (if (associative? old-val)
+    (assoc old-val i new-val)
+    (concat (take i old-val)
+            [new-val]
+            (drop (inc i) old-val))))
+
+(defmulti znext (fn [[_ [[type & _] & _]]]
+                    type))
+
+(defmulti zprev (fn [[_ [[type & _] & _]]]
+                    type))
+
+(defmulti back (fn [type & args]
+                 type))
+
+(defn zup [[new-val [[type old-val & args] & path]]]
+  [(apply back type old-val new-val args) path])
+
+(defmethod znext :nth [[obj [[_ _ i] & _] :as zm]]
+  (-> zm
+      zup
+      (znth (inc i))))
+
+(defmethod zprev :nth [[obj [[_ _ i] & _] :as zm]]
+  (-> zm
+      zup
+      (znth (dec i))))
+
+(defmulti zremove (fn [[_ [[type & _] & _]]]
+                    type))
+
+(defmethod zremove :nth [[_ [[_ parent i] & path]]]
+  [(vec (concat (subvec parent 0 i)
+                (subvec parent (inc i) (count parent))))
+   path])
+
+(defmethod zremove :get [[_ [[_ parent k] & path]]]
+  [(dissoc parent k)
+   path])
+
+(defn zseq [[obj path]]
+  [(seq obj) (conj path [:seq obj])])
+
+(defmethod back :seq [_ old-val new-val]
+  (into (empty old-val) new-val))
+
+(defn zroot [[obj path :as zm]]
+  (if path
+    (recur (zup zm))
+    zm))
+
+(defn zpeek [[obj path]]
+  obj)
 
 (defn unzip [zm]
-  (zpeek (zroot zm)))
+  (-> zm zroot zpeek))
 
-(defn zget [zm k]
-  (zdown zm #(get % k) #(assoc %1 k %2)))
+(defn zedit [[obj path] f]
+  [(f obj) path])
 
+(defn zreplace [[obj path] val]
+  [val path])
 
-(defn znth [zm i]
-  (zdown zm
-         #(nth % i)
-         (if (associative? (zpeek zm))
-           #(assoc %1 i %2)
-           #(concat (take i %1)
-                    [%2]
-                    (drop (inc i) %1)))))
-
-(defn zseq [zm]
-  (zdown zm #(seq %) #(into (empty %1) %2)))
-
-(defn zfirst [zm]
-  (zdown zm #(first %) #(cons %2 (rest %1))))
-
-
-
-
-
-
-;; (defmacro defnz [name ])
-
-;; (defnz zdouble
-;;   ([x]
-;;      (map (partial * 2) x))
-;;   ([old new]
-;;      (into (empty old) (map (partial / 2) new))))
-
-;; (defnz zget
-;;   ([x k]
-;;      (get x k))
-;;   ([x k v]
-;;      (assoc x k v)))
-
-;; (defn zdouble [[x path :as zm]]
-;;   [(map (partial * 2) x) (conj path
-;;                                (fn [new]
-;;                                  (into (empty x)
-;;                                        (partial / 2))))])
