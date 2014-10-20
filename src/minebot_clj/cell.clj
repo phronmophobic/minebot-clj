@@ -14,6 +14,8 @@
             [minebot-clj.cwidget :refer [defwidget]]
             [clojure.zip :as z]
             )
+  (:use [minebot-clj.zipper :exclude [zseq] :as zip]
+)
   (:import (com.trolltech.qt.gui QApplication QPushButton
                                  ;; Checkbox with a text label
                                  QCheckBox
@@ -131,6 +133,20 @@
       (string? x)
       (instance? java.util.Map x)))
 
+
+
+(defprotocol IRezip
+  (make-node [node children] "Makes new node from existing node and new children."))
+
+;; (extend-type Object TreeNode
+;;              (branch? [node] false)
+;;              (make-node [node children] node))
+
+;; (defn tree-zip
+;;   "Make a zipper out of a tree."
+;;   [root]
+;;   (z/zipper branch? node-children make-node root))
+
 (defn myzip [root]
   (z/zipper #(or (vector? %)
                  (seq? %)
@@ -138,6 +154,7 @@
             seq
             (fn [coll c]
               (cond
+               (satisfies? IRezip coll) (make-node coll c)
                (instance? clojure.lang.MapEntry coll)
                (clojure.lang.MapEntry. (first c) (second c))
                (seq? coll)
@@ -234,6 +251,7 @@
               newval (try
                        (let [ns (create-ns nsym)]
                          (eval '(require '[clojure.zip :as z]))
+                         (eval '(use '[minebot-clj.zipper :exclude [zseq]]))
                          (eval '(import 'com.trolltech.qt.core.QPoint))
                          (doseq [arg args]
                            (intern ns arg (get vals arg)))
@@ -541,16 +559,44 @@
       (.show new-node)
       new-node)))
 
+
+
 (defmethod draw-shape :default [painter shape-type args]
   (clojure.lang.Reflector/invokeInstanceMethod
    painter (name shape-type) (to-array args)))
 
+
+(declare IDraw draw-calls)
 (defn draw-shapes [painter shapes]
-  (doseq [shape @shapes]
-    (if-not (vector? shape)
-      (dorun (map (partial draw-shapes painter) shape))
-      (let [[shape-type & args] shape]
-        (draw-shape painter shape-type args)))))
+  (cond
+   (satisfies? IDraw shapes)
+   (draw-shapes painter (draw-calls shapes))
+
+   (vector? shapes)
+   (let [[shape-type & args] shapes]
+     (draw-shape painter shape-type args))
+
+   (seq? shapes)
+   (dorun (map (partial draw-shapes painter) shapes))))
+
+(defmacro with-save [painter & body]
+  `(try
+     (.save ~painter)
+     ~@body
+     (finally
+       (.restore ~painter))))
+
+(defmethod draw-shape :translate [painter shape-type [[x y] & shapes]]
+  (with-save painter
+    (.translate painter x y)
+    (draw-shapes painter shapes)))
+
+(defmethod draw-shape :drawTextBottom [painter _ [text]]
+  (let [height (.height (.boundingRect painter
+                                       (QRect.)
+                                       0
+                                       text))]
+    (.drawText painter 0 height text)))
 
 
 (defn QCanvas []
@@ -567,7 +613,7 @@
           (doto painter
             (.setRenderHint com.trolltech.qt.gui.QPainter$RenderHint/Antialiasing))
           (try
-            (draw-shapes painter shapes)
+            (draw-shapes painter @shapes)
             (catch Exception e
               (msg e))))
         nil))))
@@ -587,15 +633,259 @@
 (definterface ISubblocks
   (subblocks []))
 
+(definterface IQDraw
+  (^Object onDraw [])
+  (^void setOnDraw [^Object ondraw])  )
+
+(definterface IQClick
+  (^Object onMousePress [])
+  (^void setOnMousePress [^Object onpress])
+
+  (^Object onMouseMove [])
+  (^void setOnMouseMove [^Object onmove])
+
+  (^Object onMouseRelease [])
+  (^void setOnMouseRelease [^Object onrelease]))
+
+(definterface IScratchArea
+  (^Object blocks [])
+  (^void setBlocks [^Object blocks]))
+
 (definterface IBlock)
 
+(defn v+ [& vs]
+  (apply mapv + vs))
 
+(defn v- [& vs]
+  (apply mapv - vs))
+
+(defn vmax [& vs]
+  (apply mapv max vs))
+
+(defn vmin [& vs]
+  (apply mapv min vs))
+
+(defn runion [& rs]
+  [(apply vmin (map first rs))
+   (apply vmax (map second rs))])
+
+
+(defprotocol ISize
+  (-size [this]))
+
+(defn size [obj]
+  (if (satisfies? ISize obj)
+    (-size obj)
+    [0 0]))
+
+(defprotocol IPadding
+  (-padding [this]))
+
+(defn padding [obj]
+  (if (satisfies? IPadding obj)
+    (-padding obj)
+    [0 0 0 0]))
+
+(defprotocol IMargin
+  (-margin [this]))
+
+(defn margin [obj]
+  (if (satisfies? IMargin obj)
+    (-margin obj)
+    [0 0 0 0]))
+
+(defprotocol IDraw
+  (draw [this painter])
+  (draw-calls [this]))
+(defprotocol IDrawSelf
+  (draw-self [this painter]))
+;; (defprotocol IBox
+;;   (box [this]
+;;     ))
+
+
+
+(defprotocol IDrawChildren
+  (draw-children [this]))
+
+(defn box [obj]
+  (let [[w h] (size obj)
+        [pl pu pr pd] (padding obj)
+        [ml mu mr md] (margin obj)]
+    [(+ w pl pr ml mr)
+     (+ h pu pd mu md)]))
+
+(defrecord ScratchArea [blocks selected-block pos])
+
+(defn scratch-click [zblock [x y]]
+  (when (and (>= x 0)
+             (>= y 0))
+    (let [block (zpeek zblock)
+          [w h] (box block)]
+      (when (and (<= x w)
+                 (<= y h))
+        (let [zchildren (-> zblock
+                            (zget :subblocks)
+                            seq)
+              match (first (filter #(scratch-click %
+                                         (v- [x y]
+                                             (-> % :pos)))
+                         zchildren))]
+          (if match
+            match
+            zblock))))))
+
+
+
+
+
+(defrecord ScratchText [text]
+  IDraw
+  (draw-calls [this]
+    [:drawTextBottom text])
+  (draw [this painter]
+    (let [height (.height (.boundingRect painter
+                                         (QRect.)
+                                         0
+                                         text))]
+      (.drawText painter 0 height text)))
+  ISize
+  (-size [this]
+    [(* (count text) 10)
+     20]))
+(defn scratchtext
+  ([text]
+     (ScratchText. text)))
+
+        ;; (draw top painter)
+        ;; (.translate painter 10 h)
+        ;; (doseq [block subblocks]
+        ;;   (let [[w h] (box block)]
+        ;;     (draw block painter)
+        ;;     (.translate painter 0 h)))
+
+(defrecord ScratchGroup [pos block]
+  ISize
+  (-size [this]
+    (box block))
+
+  IDraw
+  (draw-calls [this]
+    [:translate pos block])
+
+  (draw [this painter]))
+
+
+(defn scratchgroup [pos block]
+  (ScratchGroup. pos block))
+
+(defrecord ScratchBlock [text subblocks]
+  ;; IPersistentCollection
+  ;; (seq [this]
+  ;;   )
+  ;; (count [this])
+  ;; (cons [this o])
+  IRezip
+  (make-node [this children]
+    (map->ScratchBlock (into {} children)))
+
+  IDrawChildren
+  (draw-children [this]
+    (let [top (scratchtext text)
+            [w h] (box top)]
+      (loop [children [top]
+             pos [10 h]
+             [block & subblocks] subblocks]
+        (if block
+          (recur (conj children
+                       (assoc block :pos pos))
+                 (let [[w h] (box block)]
+                   (v+ pos [0 h]))
+                 subblocks)
+          children))))
+  IDraw
+  (draw-calls [this]
+    (let [top (scratchtext text)
+          [w h] (box top)]
+      (apply
+       list
+       (scratchtext text)
+       (loop [calls []
+              pos [10 h]
+              [block & subblocks] subblocks]
+         (if block
+           (recur (conj calls
+                        [:translate pos
+                         block])
+                  (let [[w h] (box block)]
+                    (v+ pos [0 h]))
+                  subblocks)
+           calls)))))
+
+  (draw [this painter]
+    (doseq [child (draw-children this)]
+      (with-save painter
+        (let [[x y] (:pos child)]
+          (.translate painter x y)
+          (draw child painter)))))
+
+  ISize
+  (-size [this]
+    (apply v+
+           (box (scratchtext text))
+           (if (seq subblocks)
+             [10 0]
+             [0 0])
+           (map box subblocks))))
+
+(defn scratchblock
+  ([text]
+     (scratchblock text []))
+  ([text subblocks]
+     (ScratchBlock. text subblocks)))
+
+(defn do-draw [painter calls]
+  
+  )
+(defn click-target [zcalls [x y]]
+  (let [calls (zpeek zcalls)]
+    (cond
+     (instance? ScratchBlock calls)
+     (let [target calls
+           [w h] (box target)]
+       (if (and (>= x 0)
+                (>= y 0)
+                (<= x w)
+                (<= y h))
+         (or (click-target (draw-calls calls)
+                           [x y])
+             target)))
+
+     (satisfies? IDraw calls)
+     (click-target (draw-calls calls) [x y])
+
+     (vector? calls)
+     (let [call calls
+           call-type (first call)]
+       (if (= :translate call-type)
+         (let [[_ dpos & calls] call]
+           (click-target calls
+                         (v- [x y]
+                             dpos)))))
+
+     (seq? calls)
+     (first (filter identity (map #(click-target % [x y]) calls))))))
 
 (defwidget QScratchArea
-  [_selectedBlockId]
-  [ISubblocks ISelectBlockId]
-  [[blockSelected 1]
-   [selectedBlockMoved 1]]
+  [#_ _selectedBlockId myblocks]
+  ;; [ISubblocks ISelectBlockId IScratchArea]
+  [IScratchArea]
+  [[mousePressed 1]
+   [mouseReleased 1]
+   [mouseMoved 1]
+   [onDraw 1]]
+  ;; [[blockSelected 1]
+  ;;  [selectedBlockMoved 1]]
 
   (^Object selectedBlockId [this]
     (. this _selectedBlockId))
@@ -605,44 +895,66 @@
             nil
             block-id)))
 
+
+  ;; (^Object onMouseRelease [this]
+  ;;   (. this _onMouseRelease))
+  ;; (^void setOnMouseRelease [this ^Object onMouseRelease]
+  ;;   (set! (. this _onMouseRelease)
+  ;;         onMouseRelease))
+  ;; (^Object onMousePress [this]
+  ;;   (. this _onMousePress))
+  ;; (^void setOnMousePress [this ^Object onMousePress]
+  ;;   (set! (. this _onMousePress)
+  ;;         onMousePress))
+  ;; (^Object onMouseMove [this]
+  ;;   (. this _onMouseMove))
+  ;; (^void setOnMouseMove [this ^Object onMouseMove]
+  ;;   (set! (. this _onMouseMove)
+  ;;         onMouseMove))  
+
+  ;; (^Object onDraw [this]
+  ;;   (. this _onDraw))
+  ;; (^void setOnDraw [this ^Object onDraw]
+  ;;   (set! (. this _onDraw)
+  ;;         onDraw))
+  
+
+  (^Object blocks [this]
+    (. this myblocks))
+  (^void setBlocks [this ^Object _blocks]
+    (set! (. this myblocks)
+          _blocks)
+    (.repaint this))
+
   (subblocks [this]
     (mapcat #(.subblocks %) (children this)))
 
+  (paintEvent [this event]
+    (with-painter [painter this]
+      (try
+        (.emit (.onDraw this) painter)
+        (catch Exception e
+          (msg (with-out-str
+                 (clojure.stacktrace/print-stack-trace e))))))
+        nil)
+
   (mouseMoveEvent [this event]
-    (when (. this _selectedBlockId)
-      (let [mpos (.pos event)]
-        (.emit (.selectedBlockMoved this)
-               [(.x mpos)
-                (.y mpos) ]))))
+    (let [mpos (.pos event)]
+      (.emit (.mouseMoved this) [(.x mpos)
+                            (.y mpos)])
+      (.repaint this)))
 
   (mousePressEvent [this event]
-    (try
-      (let [subblocks (filter #(.underMouse %) (.subblocks this))
-            depth? (fn [node]
-                     (loop [node node
-                            depth 1]
-                       (if (= (.parent node) this)
-                         depth
-                         (if-let [parent (.parent node)]
-                           (recur parent (inc depth))
-                           0))))
-            node (loop [depth -1
-                        [block & rest] subblocks]
-                   (when block
-                     (let [new-depth (depth? block)]
-                       (if (and (>= new-depth depth) (seq rest))
-                         (recur new-depth rest)
-                         block))))
-            pos (.pos event)]
-        (when node
-         (.emit (.blockSelected this) (.objectName node))
-         (.emit (.selectedBlockMoved this) [(- (.x pos) (.x node))
-                                            (- (.y pos) (.y node))])))
-      (catch Exception e
-        (msg (with-out-str (clojure.stacktrace/print-stack-trace e))))))
+    (let [mpos (.pos event)]
+      (.emit (.mousePressed this) [(.x mpos)
+                            (.y mpos) ])))
+
   (mouseReleaseEvent [this event]
-    (.emit (.blockSelected this) nil)
-    ;; (reset! selected nil)
+    (let [mpos (.pos event)]
+      (.emit (.mouseReleased this) [(.x mpos)
+                                    (.y mpos) ]))    
+
+
     ))
 
 (defwidget QScratchBlock
@@ -662,10 +974,6 @@
         (.show))))
 
 
-  (childEvent [this event]
-    (when  (.added event)
-      (.adjustSize this)))
-  
   (block? [this]
     true)
 
@@ -705,7 +1013,7 @@
     (.text (.label this)))
   (setText [this _text]
     (.setText (.label this) (str _text))
-    (.adjustSize (.label this))))
+    #_(.adjustSize (.label this))))
 
 
 (defn QVBoxWidget []
@@ -723,6 +1031,7 @@
         instance (if (class? constructor)
                    (.newInstance constructor)
                    (constructor))]
+    #_(.setSizePolicy instance (com.trolltech.qt.gui.QSizePolicy. (com.trolltech.qt.gui.QSizePolicy$Policy/Expanding) (com.trolltech.qt.gui.QSizePolicy$Policy/Expanding)))
     (merge-props instance nil (-> zui z/down z/right))
     (merge-children instance nil (-> zui z/down z/right z/right zseq))
     instance))
@@ -871,7 +1180,19 @@
 ;;   (-merge! [obj old new]
 ;;     (merge-ui! obj old new)))
 
-(def uis (atom {}))
+(defonce uis (atom {}))
+
+
+
+(defn update-size* [node]
+  (doseq [child (.children node)
+          :when (instance? QWidget child)]
+    (update-size* child))
+  (.adjustSize node))
+(defn update-size [node]
+    (doseq [child (.children node)
+          :when (instance? QWidget child)]
+      (update-size* child)))
 
 (defn show-ui
   ([ui]
@@ -881,10 +1202,11 @@
                   (try
                     (let [[node old] (get @uis key)
                           new-node (merge-ui! node
-                                              old (myzip ui))
-                          ]
+                                              old (myzip ui))]
                       (doto new-node
-                        (.show))
+                        #_(update-size)
+                        (.show)
+                        )
                       (swap! uis assoc key [new-node ui]))
                     (catch Exception e
                       (msg e)
@@ -1008,135 +1330,315 @@
 
 
 (def scratch-env (atom (Environment. {} {} {})))
-(defmacro with-scratch [sym body]
-  `(swap! scratch-env set-form (quote ~sym) (quote ~body)))
+(defmacro with-scratch
+  ([sym]
+     `(swap! scratch-env set-form (quote ~sym) ~sym))
+  ([sym body]
+     `(swap! scratch-env set-form (quote ~sym) (quote ~body))))
 
-(swap! scratch-env set-val 'env-vals (fn []
-                                (:vals @scratch-env)))
-(swap! scratch-env set-val 'set-val #(swap!
-                               scratch-env set-val %1 %2))
-(swap! scratch-env set-val 'find-child (fn [ref name]
-                                  (.findChild (.window ref) nil name)))
-(swap! scratch-env set-val 'msg msg)
-(swap! scratch-env set-val 'set-form #(swap! scratch-env set-form %1 %2))
-(swap! scratch-env set-val 'shake (fn [name]
-                             (swap! scratch-env shake name)))
+(with-scratch env-vals
+  (fn []
+    (:vals @scratch-env)))
+(swap! scratch-env set-val 'set-val
+       #(swap!
+         scratch-env set-val %1 %2))
+(with-scratch find-child
+  (fn [ref name]
+    (.findChild (.window ref) nil name)))
+(with-scratch msg)
+(with-scratch set-form
+  #(swap! scratch-env set-form %1 %2))
+(with-scratch shake
+  (fn [name]
+    (swap! scratch-env shake name)))
 
 
-(swap! scratch-env set-val 'show-ui show-ui)
-(swap! scratch-env set-form 'make-ui! '(apply show-ui ui))
-(swap! scratch-env set-val 'normalize-ui normalize-ui)
-(swap! scratch-env set-val 'myzip myzip)
-(swap! scratch-env set-val 'zseq zseq)
+(with-scratch show-ui)
+(with-scratch make-ui!
+  (apply show-ui ui))
+(with-scratch normalize-ui)
+
+(with-scratch draw-shapes)
+
+(with-scratch selected-block-id nil)
+(with-scratch scratchblock)
+(with-scratch scratchgroup)
 
 
+
+
+
+(with-scratch v-)
+(with-scratch v+)
+(with-scratch box)
+(with-scratch draw-calls)
+(swap! scratch-env set-val 'draw-calls
+       draw-calls)
+(with-scratch ScratchBlock)
+(swap! scratch-env set-val 'IDraw IDraw)
+(swap! scratch-env set-val 'ScratchGroup ScratchGroup)
+(swap! scratch-env set-val 'zpeek zpeek)
+(swap! scratch-env set-val 'seqz seqz)
+(swap! scratch-env set-val 'zget zget)
+(swap! scratch-env set-val 'zip zip)
+(swap! scratch-env set-val 'zremove zremove)
+(swap! scratch-env set-val 'zedit zedit)
+(swap! scratch-env set-val 'zroot zroot)
+(swap! scratch-env set-val 'znth znth)
+(swap! scratch-env set-val 'unzip unzip)
+
+;; (swap!
+;;  scratch-env set-val 'find-clicked
+;;  (fn find-clicked [[x y :as pos] draws]
+;;    (cond
+;;     (instance? ScratchBlock draws)
+;;     (let [[w h] (box draws)]
+;;       (if (and (>= x 0)
+;;                (>= y 0)
+;;                (<= x w)
+;;                (<= y h))
+;;         (let [child (find-clicked pos (draw-calls draws))]
+;;           (or child draws))))
+
+;;     (satisfies? IDraw draws)
+;;     (find-clicked pos (draw-calls draws))
+
+;;     (seq? draws)
+;;     (first (keep #(find-clicked pos %) draws))
+
+;;     (vector? draws)
+;;     (let [call draws
+;;           call-type (first call)]
+;;       (if (= :translate call-type)
+;;         (let [[_ dpos & calls] call]
+;;           (find-clicked (v- [x y]
+;;                             dpos)
+;;                         calls)))))))
+(with-scratch selected-block nil)
+(with-scratch highlight nil)
+
+(defn find-scratch-block [zm block]
+  (when zm
+    (let [obj (zpeek zm)]
+      (cond
+       (identical? obj block)
+       zm
+
+       (seq? obj)
+       (first (keep #(find-scratch-block % block) (seqz zm)))
+
+       (instance? ScratchGroup obj)
+       (find-scratch-block (zget zm :block) block)
+
+       (instance? ScratchBlock obj)
+       (first (keep #(find-scratch-block % block) (seqz (zget zm :subblocks))))))))
+(swap! scratch-env set-val
+       'find-scratch-block find-scratch-block)
+
+
+(defn find-clicked
+  ([pos draws]
+     (find-clicked pos draws nil))
+  ([[x y :as pos] draws path]
+     (cond
+      (satisfies? IDraw draws)
+      (let [[w h] (box draws)
+            [x y] (if (contains? draws :pos)
+                    (v- pos (:pos draws))
+                    pos)]
+        (if (and (>= x 0)
+                 (>= y 0)
+                 (<= x w)
+                 (<= y h))
+          (let []
+            (concat (find-clicked pos (draw-calls draws) (conj path draws))
+                    (list [draws path])))))
+
+      (seq? draws)
+      (mapcat #(find-clicked pos % path) draws)
+
+      (vector? draws)
+      (let [call draws
+            call-type (first call)]
+        (if (= :translate call-type)
+          (let [[_ dpos & calls] call]
+            (concat (find-clicked (v- [x y]
+                                      dpos)
+                                  calls
+                                  (conj path call)))))))))
+
+(swap!
+ scratch-env set-val
+ 'find-clicked
+ find-clicked)
 
 (swap! scratch-env set-val 'blocks
-       [[:QScratchBlock {:text "alpha"
-                         :objectName "alpha"
-                         :pos [100 100]
-                         :background-color [255 255 255]}]
-        [:QScratchBlock {:text "beta"
-                         :objectName "beta"
-                         :pos [100 210]
-                         :background-color [0 255 255]}
-         [:QScratchBlock {:text "charlie"
-                          :objectName "charlie"
-                          :pos [100 210]
-                          :background-color [0 0 255]}]
-         [:QScratchBlock {:text "dingo"
-                          :objectName "dingo"
-                          :pos [100 210]
-                          :background-color [0 255 0]}]]])
-(swap! scratch-env set-val 'selected-block-id nil)
+  (list
+   (scratchgroup [50 50] (scratchblock "hi"))
+   (scratchgroup [200 50] (scratchblock "hi" [(scratchblock "a")
 
+                                              (scratchblock "b")]))))
 
-(swap! scratch-env set-form 'ui
-       '[:scratch2378998lksolllllllklllllllll
-         [:QVBoxWidget {:size [ 400 800]
-                        :pos [750 20]
-                        }
-                                   
-          [:QScratchArea {:background-color [0 0 100]
-                          :selectedBlockId (if selected-block-id
-                                             selected-block-id
-                                             "")
-                          :blockSelected
-                          (fn [area block-id]
+(with-scratch ui
+  [:scratch22l22l
+   [:QVBoxWidget {:minimumSizeHint [400 800]
+                  :pos [750 20]}
+   [:QLabel {:text (with-out-str
+                     (clojure.pprint/pprint blocks))}]
+    [:QScratchArea {:background-color [200 200 255]
+                    :mouseMoved (fn [this pos]
+                                  (try
+                                    (let [clicked (->> (find-clicked pos blocks)
+                                                       (filter #(instance? ScratchBlock (first %)))
+                                                       first)]
+                                      (if clicked
+                                        (let [[block path] clicked
+                                              translates (->> path
+                                                              reverse
+                                                              (filter vector?))
+                                              [rx ry] (->> translates
+                                                                 (map second)
+                                                                 (apply v+ [0 0]))
+                                              [w h] (box block)]
+                                          (set-val 'highlight [:drawRect rx ry w h]))
+                                        (set-val 'highlight nil)))
+                                   (catch Exception e
+                                     (msg e)))
+                                  
+                                  (when selected-block
+                                    (set-val 'selected-block
+                                             (assoc selected-block :pos pos))))
+                    :mouseReleased (fn [this pos]
+                                     (set-val 'highlight nil)
+                                     
+                                     (when selected-block
+                                       (set-val 'selected-block nil)
+                                       (let [clicked (->> (find-clicked pos blocks)
+                                                        (filter #(instance? ScratchBlock (first %)))
+                                                        first
+                                                        first)
+                                           zblock (when clicked
+                                                    (find-scratch-block (zip blocks) clicked))]
+                                         (if zblock
+                                           (set-val 'blocks
+                                                    (-> zblock
+                                                        (zget :subblocks)
+                                                        (zedit #(conj % (:block selected-block)))
+                                                        unzip))
+                                           (set-val 'blocks
+                                                    (conj blocks selected-block))))
+                                       )
+                                     )
+                    :mousePressed (fn [this [x y]]
+                                    (try
+                                     (let [clicked
+                                           (->> (find-clicked [x y]
+                                                              blocks)
+                                                (filter #(instance? ScratchBlock (first %)))
+                                                first
+                                                first)
+                                           zclicked
+                                           (when clicked
+                                             (find-scratch-block (zip blocks) clicked))]
+                                       (try
+                                         (if zclicked
+                                           (let [
+                                                 clicked (zpeek zclicked)
+                                                 zblocks (-> zclicked zremove zroot
+                                                             (zedit #(remove (comp empty? :block) %)))
+                                                 selected-block (scratchgroup [x y] clicked)
+                                                 ]
 
-                            (set-val 'selected-block-id block-id))
-                          :selectedBlockMoved
-                          (fn [area [x y]]
-                            (try
-                              (let [blocks (myzip
-                                            blocks)
-                                    find-block (fn find-block [node selected-block-id]
-                                                 (when node
-                                                   (let [[tag props & children :as b] (normalize-ui (z/node node))]
-                                                     (if (= selected-block-id (:objectName props))
-                                                       node
-                                                       (or (some #(find-block % selected-block-id) (-> node z/down z/right z/right zseq))
-                                                           (find-block (z/right node) selected-block-id))))))
-                                    zblock (find-block (z/down blocks) selected-block-id)]
-                                (when zblock
-                                  (let [block (-> (z/node zblock)
-                                                  (assoc-in [1 :pos] [x y]))
-                                        blocks (-> zblock z/remove
-                                                   z/root
-                                                   myzip)
-                                        area-node (-> area meta :node)
-                                        gp (.mapToGlobal area-node (QPoint. x y))
-                                        new-parent-node (first
-                                                         (filter #(and (not= (.objectName %) selected-block-id)
-                                                                       (let [local (.mapFromGlobal % gp)
-                                                                             lx (.x local)
-                                                                             ly (.y local)
-                                                                             width (.width %)
-                                                                             height (.height %)]
-                                                                         (and (pos? lx)
-                                                                              (pos? ly)
-                                                                              (< lx width)
-                                                                              (< ly height)))
-                                                                       (not (.isAncestorOf %
-                                                                                           (.findChild area-node
-                                                                                                       nil
-                                                                                                       selected-block-id)))
-)
-                                                                 (.subblocks area-node)))
-                                        zparent (when (and new-parent-node
-                                                           (.objectName new-parent-node))
-                                                  (find-block (z/down blocks) (.objectName new-parent-node)))
-                                        blocks (cond
-                                                zparent
-                                                (-> zparent
-                                                     (z/edit normalize-ui)
-                                                     z/down
-                                                     z/right
-                                                     (z/insert-right block)
-                                                     z/root)
-                                                (seq (z/node blocks))
-                                                (-> blocks
-                                                     z/down
-                                                     (z/insert-left block)
-                                                     z/root)
-                                                :else
-                                                [block])]
-                                    (set-val 'blocks
-                                             blocks))))
-                              (catch Exception e
-                                (msg e)))
-                            )}
-           (for [block blocks]
-             block)]]])
+                                             (set-val 'blocks (unzip zblocks))
+                                             (set-val 'selected-block selected-block)
+                                             )
+                                           (do
+                                             (set-val 'selected-block nil)))
+                                         ))
+                                     (catch Exception e
+                                           (msg e))))
+                    :onDraw (fn [this painter]
+                              (draw-shapes painter blocks)
+                              (when highlight
+                                (draw-shapes painter highlight))
+                              (when selected-block
+                                (draw-shapes painter selected-block)))
+                    :blocks
+                    blocks
+                    ;; (ScratchBlock. "hi"
+                    ;;                [(ScratchBlock. "one" [])
+                    ;;                 (ScratchBlock. "two" [])])
+                    ;; :selectedBlockMoved
+                    ;; (fn [area [x y]]
+                    ;;   (try
+                    ;;     (let [blocks (myzip
+                    ;;                   blocks)
+                    ;;           find-block (fn find-block [node selected-block-id]
+                    ;;                        (when node
+                    ;;                          (let [[tag props & children :as b] (normalize-ui (z/node node))]
+                    ;;                            (if (= selected-block-id (:objectName props))
+                    ;;                              node
+                    ;;                              (or (some #(find-block % selected-block-id) (-> node z/down z/right z/right zseq))
+                    ;;                                  (find-block (z/right node) selected-block-id))))))
+                    ;;           zblock (find-block (z/down blocks) selected-block-id)]
+                    ;;       (when zblock
+                    ;;         (let [block (-> (z/node zblock)
+                    ;;                         (assoc-in [1 :pos] [x y]))
+                    ;;               blocks (-> zblock z/remove
+                    ;;                          z/root
+                    ;;                          myzip)
+                    ;;               area-node (-> area meta :node)
+                    ;;               gp (.mapToGlobal area-node (QPoint. x y))
+                    ;;               new-parent-node (first
+                    ;;                                (filter #(and (not= (.objectName %) selected-block-id)
+                    ;;                                              (let [local (.mapFromGlobal % gp)
+                    ;;                                                    lx (.x local)
+                    ;;                                                    ly (.y local)
+                    ;;                                                    width (.width %)
+                    ;;                                                    height (.height %)]
+                    ;;                                                (and (pos? lx)
+                    ;;                                                     (pos? ly)
+                    ;;                                                     (< lx width)
+                    ;;                                                     (< ly height)))
+                    ;;                                              (not (.isAncestorOf %
+                    ;;                                                                  (.findChild area-node
+                    ;;                                                                              nil
+                    ;;                                                                              selected-block-id)))
+                    ;;                                              )
+                    ;;                                        (.subblocks area-node)))
+                    ;;               zparent (when (and new-parent-node
+                    ;;                                  (.objectName new-parent-node))
+                    ;;                         (find-block (z/down blocks) (.objectName new-parent-node)))
+                    ;;               blocks (cond
+                    ;;                       zparent
+                    ;;                       (-> zparent
+                    ;;                           (z/edit normalize-ui)
+                    ;;                           z/down
+                    ;;                           z/right
+                    ;;                           (z/insert-right block)
+                    ;;                           z/root)
+                    ;;                       (seq (z/node blocks))
+                    ;;                       (-> blocks
+                    ;;                           z/down
+                    ;;                           (z/insert-left block)
+                    ;;                           z/root)
+                    ;;                       :else
+                    ;;                       [block])]
+                    ;;           (set-val 'blocks
+                    ;;                    blocks))))
+                    ;;     (catch Exception e
+                    ;;       (msg e)))
+                    ;;   )
+                    }]]])
 
-(swap! scratch-env set-form 'debug-ui
-       '(show-ui :debug-ui
-                 [:QVBoxWidget {:size nil}
-                  [:QTextEdit {:size nil
-                               :plainText
-                               (with-out-str
-                                 (clojure.pprint/pprint
-                                  blocks))}]]))
+(with-scratch debug-ui
+  '(show-ui :debug-ui
+            [:QVBoxWidget {:size nil}
+             [:QTextEdit {:size nil
+                          :plainText
+                          (with-out-str
+                            (clojure.pprint/pprint
+                             blocks))}]]))
 
 
 
@@ -1156,8 +1658,6 @@
      (catch Exception e
        (msg e)))
  )
-
-
 
 
 
