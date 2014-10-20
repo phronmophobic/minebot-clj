@@ -81,3 +81,6 @@
 (defn zreplace [[obj path] val]
   [val path])
 
+
+(defn seqz [[obj path :as zm]]
+  (map #(znth zm %) (range (count obj))))
