@@ -779,6 +779,21 @@
 (defn scratchgroup [pos block]
   (ScratchGroup. pos block))
 
+(defn vertical-layout [elements]
+  (loop [calls nil
+         ;; pos [10 h]
+         pos [0 0]
+         elements elements]
+    (let [element (zzfirst elements)]
+      (if element
+        (recur (conj calls
+                     [:translate pos
+                      element])
+               (let [[w h] (box element)]
+                 (v+ pos [0 h]))
+               (zzrest elements))
+        calls))))
+
 (defrecord ScratchBlock [text subblocks]
   ;; IPersistentCollection
   ;; (seq [this]
@@ -807,20 +822,10 @@
   (draw-calls [this]
     (let [top (scratchtext text)
           [w h] (box top)]
-      (apply
-       list
+      (list
        (scratchtext text)
-       (loop [calls []
-              pos [10 h]
-              [block & subblocks] subblocks]
-         (if block
-           (recur (conj calls
-                        [:translate pos
-                         block])
-                  (let [[w h] (box block)]
-                    (v+ pos [0 h]))
-                  subblocks)
-           calls)))))
+       [:translate [10 h]
+        (vertical-layout (zzget this :subblocks))])))
 
   (draw [this painter]
     (doseq [child (draw-children this)]
@@ -1386,34 +1391,6 @@
 (swap! scratch-env set-val 'zroot zroot)
 (swap! scratch-env set-val 'znth znth)
 (swap! scratch-env set-val 'unzip unzip)
-
-;; (swap!
-;;  scratch-env set-val 'find-clicked
-;;  (fn find-clicked [[x y :as pos] draws]
-;;    (cond
-;;     (instance? ScratchBlock draws)
-;;     (let [[w h] (box draws)]
-;;       (if (and (>= x 0)
-;;                (>= y 0)
-;;                (<= x w)
-;;                (<= y h))
-;;         (let [child (find-clicked pos (draw-calls draws))]
-;;           (or child draws))))
-
-;;     (satisfies? IDraw draws)
-;;     (find-clicked pos (draw-calls draws))
-
-;;     (seq? draws)
-;;     (first (keep #(find-clicked pos %) draws))
-
-;;     (vector? draws)
-;;     (let [call draws
-;;           call-type (first call)]
-;;       (if (= :translate call-type)
-;;         (let [[_ dpos & calls] call]
-;;           (find-clicked (v- [x y]
-;;                             dpos)
-;;                         calls)))))))
 (with-scratch selected-block nil)
 (with-scratch highlight nil)
 
@@ -1467,6 +1444,8 @@
                                   calls
                                   (conj path call)))))))))
 
+
+
 (swap!
  scratch-env set-val
  'find-clicked
@@ -1477,16 +1456,18 @@
    (scratchgroup [50 50] (scratchblock "hi"))
    (scratchgroup [200 50] (scratchblock "hi" [(scratchblock "a")
 
-                                              (scratchblock "b")]))))
+                                              (scratchblock "b"
+                                                            [(scratchblock "money")])]))))
 
 (with-scratch ui
-  [:scratch22l22l
+  [:scratch22l22lllll
    [:QVBoxWidget {:minimumSizeHint [400 800]
                   :pos [750 20]}
    [:QLabel {:text (with-out-str
                      (clojure.pprint/pprint blocks))}]
     [:QScratchArea {:background-color [200 200 255]
                     :mouseMoved (fn [this pos]
+                                  
                                   (try
                                     (let [clicked (->> (find-clicked pos blocks)
                                                        (filter #(instance? ScratchBlock (first %)))
@@ -1564,72 +1545,8 @@
                               (when selected-block
                                 (draw-shapes painter selected-block)))
                     :blocks
-                    blocks
-                    ;; (ScratchBlock. "hi"
-                    ;;                [(ScratchBlock. "one" [])
-                    ;;                 (ScratchBlock. "two" [])])
-                    ;; :selectedBlockMoved
-                    ;; (fn [area [x y]]
-                    ;;   (try
-                    ;;     (let [blocks (myzip
-                    ;;                   blocks)
-                    ;;           find-block (fn find-block [node selected-block-id]
-                    ;;                        (when node
-                    ;;                          (let [[tag props & children :as b] (normalize-ui (z/node node))]
-                    ;;                            (if (= selected-block-id (:objectName props))
-                    ;;                              node
-                    ;;                              (or (some #(find-block % selected-block-id) (-> node z/down z/right z/right zseq))
-                    ;;                                  (find-block (z/right node) selected-block-id))))))
-                    ;;           zblock (find-block (z/down blocks) selected-block-id)]
-                    ;;       (when zblock
-                    ;;         (let [block (-> (z/node zblock)
-                    ;;                         (assoc-in [1 :pos] [x y]))
-                    ;;               blocks (-> zblock z/remove
-                    ;;                          z/root
-                    ;;                          myzip)
-                    ;;               area-node (-> area meta :node)
-                    ;;               gp (.mapToGlobal area-node (QPoint. x y))
-                    ;;               new-parent-node (first
-                    ;;                                (filter #(and (not= (.objectName %) selected-block-id)
-                    ;;                                              (let [local (.mapFromGlobal % gp)
-                    ;;                                                    lx (.x local)
-                    ;;                                                    ly (.y local)
-                    ;;                                                    width (.width %)
-                    ;;                                                    height (.height %)]
-                    ;;                                                (and (pos? lx)
-                    ;;                                                     (pos? ly)
-                    ;;                                                     (< lx width)
-                    ;;                                                     (< ly height)))
-                    ;;                                              (not (.isAncestorOf %
-                    ;;                                                                  (.findChild area-node
-                    ;;                                                                              nil
-                    ;;                                                                              selected-block-id)))
-                    ;;                                              )
-                    ;;                                        (.subblocks area-node)))
-                    ;;               zparent (when (and new-parent-node
-                    ;;                                  (.objectName new-parent-node))
-                    ;;                         (find-block (z/down blocks) (.objectName new-parent-node)))
-                    ;;               blocks (cond
-                    ;;                       zparent
-                    ;;                       (-> zparent
-                    ;;                           (z/edit normalize-ui)
-                    ;;                           z/down
-                    ;;                           z/right
-                    ;;                           (z/insert-right block)
-                    ;;                           z/root)
-                    ;;                       (seq (z/node blocks))
-                    ;;                       (-> blocks
-                    ;;                           z/down
-                    ;;                           (z/insert-left block)
-                    ;;                           z/root)
-                    ;;                       :else
-                    ;;                       [block])]
-                    ;;           (set-val 'blocks
-                    ;;                    blocks))))
-                    ;;     (catch Exception e
-                    ;;       (msg e)))
-                    ;;   )
-                    }]]])
+                    blocks}]]])
+
 
 (with-scratch debug-ui
   '(show-ui :debug-ui
