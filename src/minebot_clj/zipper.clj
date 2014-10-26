@@ -84,3 +84,107 @@
 
 (defn seqz [[obj path :as zm]]
   (map #(znth zm %) (range (count obj))))
+
+;; (require '[clojure.tools.analyzer :as ana])
+;; (require '[clojure.tools.analyzer.env :as env])
+(require '[clojure.tools.analyzer.jvm :as ana.jvm])
+(require '[clojure.tools.analyzer.ast :as ast])
+
+;; for every binding, add meta to what it's derived from
+(defn my-analyze [form]
+  (ana.jvm/analyze' form
+                   (ana.jvm/empty-env)
+                   {:passes-opts
+                    {:validate/unresolvable-symbol-handler
+                     (fn [_ form _]
+                       {:op :var
+                        :form form})}}))
+
+
+
+(defn ret-val [ast]
+  (case (:op ast)
+    :let
+    (ret-val (:body ast))
+
+    :do
+    (ret-val (:ret ast))
+
+    ast))
+
+(defn form-deps [ast]
+  (->> (ast/nodes ast)
+       (filter #(#{:local :var} (:op %)))
+       (map #(case (:op %)
+               :local (:name %)
+               :var (:form %)))))
+
+(defn trace [form]
+  (let [ast (my-analyze form)
+        bindings (filter #(= (:op %) :binding)
+                         (ast/nodes ast))
+        dep-map (into {}
+                      (for [binding bindings
+                            :let [deps (form-deps (:init binding))]
+                            :when (seq deps)]
+                        [(:name binding)
+                         deps]))
+        ret-val (ret-val ast)
+        all-deps (loop [all-deps (set (form-deps ret-val))]
+                   (let [dep-deps (mapcat dep-map all-deps)]
+                     (if (not (every? all-deps dep-deps))
+                       (recur (into all-deps dep-deps))
+                       all-deps)))]
+    all-deps))
+
+
+(defn zzget [m k]
+  (let [val (get m k)]
+    (if (instance? clojure.lang.IObj val)
+      (with-meta val
+        {:path (conj (-> m meta :path)
+                     [:get m k])})
+      val)))
+
+(defn zznth [coll index]
+  (let [val (nth coll index)]
+    (if (instance? clojure.lang.IObj val)
+      (with-meta val
+        {:path (conj (-> coll meta :path)
+                     [:nth coll index])})
+      val)))
+
+(defn zzfirst [coll]
+  (let [val (first coll)]
+    (if (instance? clojure.lang.IObj val)
+      (with-meta val
+        {:path (conj (-> coll meta :path)
+                     [:first coll])})
+      val)))
+
+(defn zzrest [coll]
+  (let [val (rest coll)]
+    (with-meta val
+      {:path (conj (-> coll meta :path)
+                   [:rest coll])})))
+
+
+(defn zzup [obj]
+  (let [[[type old-val & args] & path] (-> obj meta :path)]
+    (apply back type old-val obj args)))
+
+(defn zzreplace [obj new-val]
+  (with-meta new-val
+    (meta obj)))
+
+(defn zzedit [obj f & args]
+  (with-meta (apply f obj args)
+    (meta obj)))
+
+(defn zzroot [obj]
+  (if (-> obj meta :path)
+    (recur (zzup obj))
+    obj))
+
+(def zzunzip [obj]
+  (zzroot obj))
