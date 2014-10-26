@@ -771,7 +771,7 @@
 
   IDraw
   (draw-calls [this]
-    [:translate pos block])
+    [:translate pos (zzget this :block)])
 
   (draw [this painter]))
 
@@ -783,16 +783,15 @@
   (loop [calls nil
          ;; pos [10 h]
          pos [0 0]
-         elements elements]
-    (let [element (zzfirst elements)]
-      (if element
-        (recur (conj calls
-                     [:translate pos
-                      element])
-               (let [[w h] (box element)]
-                 (v+ pos [0 h]))
-               (zzrest elements))
-        calls))))
+         [element & elements] elements]
+    (if element
+      (recur (conj calls
+                   [:translate pos
+                    element])
+             (let [[w h] (box element)]
+               (v+ pos [0 h]))
+             elements)
+      calls)))
 
 (defrecord ScratchBlock [text subblocks]
   ;; IPersistentCollection
@@ -825,7 +824,7 @@
       (list
        (scratchtext text)
        [:translate [10 h]
-        (vertical-layout (zzget this :subblocks))])))
+        (vertical-layout (zzseq (zzget this :subblocks)))])))
 
   (draw [this painter]
     (doseq [child (draw-children this)]
@@ -1388,9 +1387,16 @@
 (swap! scratch-env set-val 'zip zip)
 (swap! scratch-env set-val 'zremove zremove)
 (swap! scratch-env set-val 'zedit zedit)
-(swap! scratch-env set-val 'zroot zroot)
 (swap! scratch-env set-val 'znth znth)
 (swap! scratch-env set-val 'unzip unzip)
+
+(swap! scratch-env set-val 'zzroot zzroot)
+(swap! scratch-env set-val 'zzremove zzremove)
+(swap! scratch-env set-val 'zzseq zzseq)
+(swap! scratch-env set-val 'zzedit zzedit)
+(swap! scratch-env set-val 'zzget zzget)
+(swap! scratch-env set-val 'zzunzip zzunip)
+
 (with-scratch selected-block nil)
 (with-scratch highlight nil)
 
@@ -1455,21 +1461,23 @@
   (list
    (scratchgroup [50 50] (scratchblock "hi"))
    (scratchgroup [200 50] (scratchblock "hi" [(scratchblock "a")
-
+                                              (scratchblock "aa")
+                                              (scratchblock "AA")
+                                              (scratchblock "AA")
+                                              (scratchblock "AA")
                                               (scratchblock "b"
                                                             [(scratchblock "money")])]))))
 
 (with-scratch ui
-  [:scratch22l22lllll
+  [:scratch22l22lllllll
    [:QVBoxWidget {:minimumSizeHint [400 800]
                   :pos [750 20]}
    [:QLabel {:text (with-out-str
                      (clojure.pprint/pprint blocks))}]
     [:QScratchArea {:background-color [200 200 255]
                     :mouseMoved (fn [this pos]
-                                  
                                   (try
-                                    (let [clicked (->> (find-clicked pos blocks)
+                                    (let [clicked (->> (find-clicked pos (zzseq blocks))
                                                        (filter #(instance? ScratchBlock (first %)))
                                                        first)]
                                       (if clicked
@@ -1494,18 +1502,16 @@
                                      
                                      (when selected-block
                                        (set-val 'selected-block nil)
-                                       (let [clicked (->> (find-clicked pos blocks)
+                                       (let [clicked (->> (find-clicked pos (zzseq blocks))
                                                         (filter #(instance? ScratchBlock (first %)))
                                                         first
-                                                        first)
-                                           zblock (when clicked
-                                                    (find-scratch-block (zip blocks) clicked))]
-                                         (if zblock
+                                                        first)]
+                                         (if clicked
                                            (set-val 'blocks
-                                                    (-> zblock
-                                                        (zget :subblocks)
-                                                        (zedit #(conj % (:block selected-block)))
-                                                        unzip))
+                                                    (-> clicked
+                                                        (zzget :subblocks)
+                                                        (zzedit #(conj % (:block selected-block)))
+                                                        zzroot))
                                            (set-val 'blocks
                                                     (conj blocks selected-block))))
                                        )
@@ -1514,23 +1520,20 @@
                                     (try
                                      (let [clicked
                                            (->> (find-clicked [x y]
-                                                              blocks)
+                                                              (zzseq blocks))
                                                 (filter #(instance? ScratchBlock (first %)))
                                                 first
-                                                first)
-                                           zclicked
-                                           (when clicked
-                                             (find-scratch-block (zip blocks) clicked))]
+                                                first)]
+                                       (msg "root " (-> clicked zzroot))
+                                       (msg "root removed " (-> clicked zzremove zzroot))
                                        (try
-                                         (if zclicked
-                                           (let [
-                                                 clicked (zpeek zclicked)
-                                                 zblocks (-> zclicked zremove zroot
-                                                             (zedit #(remove (comp empty? :block) %)))
-                                                 selected-block (scratchgroup [x y] clicked)
-                                                 ]
+                                         (if clicked
+                                           (let [blocks (-> clicked zzremove zzroot
+                                                            (zzedit #(remove (comp empty? :block) %)))
+                                                 selected-block (scratchgroup [x y] (vary-meta clicked
+                                                                                               dissoc :path))]
 
-                                             (set-val 'blocks (unzip zblocks))
+                                             (set-val 'blocks blocks)
                                              (set-val 'selected-block selected-block)
                                              )
                                            (do

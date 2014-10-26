@@ -1,6 +1,5 @@
 (ns minebot-clj.zipper)
 
-
 (defn zip [obj]
   [obj nil])
 
@@ -63,6 +62,13 @@
 
 (defmethod back :seq [_ old-val new-val]
   (into (empty old-val) new-val))
+
+(defmethod back :first [_ old-val new-val]
+  (cons new-val (rest old-val)))
+
+(defmethod back :rest [_ old-val new-val]
+  (cons (first old-val)
+        new-val))
 
 (defn zroot [[obj path :as zm]]
   (if path
@@ -171,7 +177,8 @@
 
 (defn zzup [obj]
   (let [[[type old-val & args] & path] (-> obj meta :path)]
-    (apply back type old-val obj args)))
+    (with-meta (apply back type old-val obj args)
+      {:path path})))
 
 (defn zzreplace [obj new-val]
   (with-meta new-val
@@ -186,5 +193,25 @@
     (recur (zzup obj))
     obj))
 
-(def zzunzip [obj]
+(defmulti zzremove (fn [obj]
+                     (let [[[type & _] & _] (-> obj meta :path)]
+                       type)))
+
+
+(defmethod zzremove :first [obj]
+  (-> obj zzup (zzedit rest)))
+
+(defmethod zzremove :get [obj]
+  (let [[[_ old-val k] & path] (-> obj meta :path)
+        val (dissoc old-val k)]
+    (vary-meta val
+               assoc :path path)))
+
+(defn zzunzip [obj]
   (zzroot obj))
+
+(defn zzseq [obj]
+  (lazy-seq
+   (when-let [s (seq obj)]
+     (cons (zzfirst obj)
+           (zzseq (zzrest obj))))))
