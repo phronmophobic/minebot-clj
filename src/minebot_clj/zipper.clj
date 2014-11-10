@@ -197,6 +197,59 @@
                      (let [[[type & _] & _] (-> obj meta :path)]
                        type)))
 
+(defmulti zzinsert-left
+  (fn [obj & args]
+    (let [[[type & _] & _] (-> obj meta :path)]
+      type)))
+
+(defmulti zzinsert-right
+  (fn [obj & args]
+    (let [[[type & _] & _] (-> obj meta :path)]
+      type)))
+
+(defmethod zzinsert-left :nth [obj val]
+  (let [[[type _ i :as op] & _] (-> obj meta :path)]
+    (-> obj
+        zzup
+        (zzedit (fn [xs]
+                  (into (empty xs)
+                        (concat
+                         (take i xs)
+                         [val]
+                         (drop i xs)))))
+        (zznth (inc i)))))
+
+(defmethod zzinsert-right :nth [obj val]
+  (let [[[_ _ i :as op] & _] (-> obj meta :path)]
+    (-> obj
+        zzup
+        (zzedit (fn [xs]
+                  (into (empty xs)
+                        (concat
+                         (take (inc i) xs)
+                         [val]
+                         (drop (inc i) xs)))))
+        (zznth i))))
+
+(defmethod zzinsert-left :first [obj val]
+  (let [[[_ parent] & _] (-> obj meta :path)]
+    (-> obj
+        (zzup)
+        (zzedit (fn [xs]
+                  (cons val
+                        xs)))
+        (zzrest)
+        (zzfirst))))
+
+(defmethod zzinsert-right :first [obj val]
+  (let [[[_ parent] & _] (-> obj meta :path)]
+    (-> obj
+        (zzup)
+        (zzedit (fn [xs]
+                  (cons (first xs)
+                        (cons val
+                              (rest xs)))))
+        (zzfirst))))
 
 (defmethod zzremove :first [obj]
   (-> obj zzup (zzedit rest)))
@@ -215,3 +268,25 @@
    (when-let [s (seq obj)]
      (cons (zzfirst obj)
            (zzseq (zzrest obj))))))
+
+(defn meta-num
+  ([n]
+     (meta-num n nil))
+  ([n m]
+     (proxy [Number clojure.lang.IObj clojure.lang.IMeta] []
+       (byteValue []
+         (byte n))
+       (doubleValue []
+         (double n))
+       (floatValue []
+         (float n))
+       (intValue []
+         (int n))
+       (longValue []
+         (long n))
+       (shortValue []
+         (short n))
+       (meta []
+         m)
+       (withMeta [m]
+         (meta-num n m)))))
