@@ -183,6 +183,12 @@
 
   (shake [this name]))
 
+(defprotocol IRefEnvironment
+  (set-form
+    [this name form locals]
+    [this name form locals dep])
+  (shake! [this name]))
+
 (def core-syms (set (keys (ns-publics 'clojure.core))))
 
 
@@ -196,6 +202,62 @@
 ;; (defn merge! [obj old new]
 ;;   (-merge! obj old new))
 
+(def ^:dynamic *locals*)
+(defrecord RefEnvironment [forms locals deps ns]
+  IRefEnvironment
+  (set-form [this name form locals]
+    (set-form this name form locals nil))
+  (set-form [this name form form-locals dep]
+    (let [forms (assoc forms name form)
+          locals (assoc locals name (into {}
+                                          (for [[k v] form-locals
+                                                :when (contains? (set (cell-deps form))
+                                                                 k)]
+                                            [k v])))
+          
+          deps (if dep
+                 (assoc deps name (set dep))
+                 (assoc deps name (->> (cell-deps name form)
+                                       (remove #(contains? (set (keys form-locals))
+                                                           %))
+                                       set)))]
+      (RefEnvironment. forms locals deps ns)))
+  (shake! [this name]
+    (let [deps (get deps name)
+          dep-vars (into {}
+                         (for [dep deps]
+                           [dep (ns-resolve ns dep)]))]
+      (if (not (every? identity (vals dep-vars)))
+        (do
+          (msg "couldn't find args "
+               (for [[dep var] dep-vars
+                     :when (nil? var)]
+                 dep))
+          nil)
+        
+        (let [form (get forms name)
+              bindings (for [[dep var] dep-vars
+                             :when (:reactive? (meta var))]
+                         [dep `(deref ~dep)])
+              form-locals (get locals name)
+              bindings (into bindings
+                             (for [k (keys form-locals)]
+                               [k `(get *locals* (quote ~k))]))
+              eval-form `(let [~@(apply concat bindings)]
+                                    ~form)
+              ref (-> (ns-resolve ns name)
+                      deref)
+              old-val (deref ref)
+              new-val (binding [*ns* ns
+                                *locals* form-locals]
+                        (eval
+                         eval-form))]
+          (msg "updating " name)
+          (when (not= old-val new-val)
+            (ref-set ref new-val)
+            (doseq [[other-name other-deps] (:deps this)
+                    :when (contains? other-deps name)]
+              (shake! this other-name))))))))
 
 
 ;;(defrecord Environment [refs forms deps])
@@ -302,7 +364,7 @@
       first))
 
 
-(defn start []
+#_(defn start []
   (.execute (.getNonBlockingMainQueueExecutor (com.apple.concurrent.Dispatch/getInstance))
             (fn []
 
@@ -977,6 +1039,11 @@
       (.adjustSize node)
       (.setProperty node "size" (QSize. x y)))))
 
+(defmethod set-property :html [node kv old-val]
+  (let [[property html] (z/node kv)]
+    (.setHtml node html)))
+
+
 
 (defn arg-count [f]
   (let [m (first (.getDeclaredMethods (class f)))
@@ -1098,8 +1165,6 @@
 
 (defonce uis (atom {}))
 
-
-
 (defn update-size* [node]
   (doseq [child (.children node)
           :when (instance? QWidget child)]
@@ -1140,6 +1205,118 @@
          (QApplication/invokeLater work))))
   
   )
+
+
+
+(def renv (atom (RefEnvironment. {} {} {} *ns*)))
+(defmacro r! [name form]
+  `(do
+     
+     (swap! renv set-form (quote ~name) (quote ~form) (into {}
+                                                              [~@(for [[k _] &env]
+                                                                   [(list 'quote k)
+                                                                    k])]))
+     (dosync
+      (shake! (deref renv) (quote ~name)))
+     (when (instance? clojure.lang.IDeref ~name)
+       (deref ~name))))
+(defmacro defr [name form]
+  `(do
+     (defonce ~(vary-meta name assoc :reactive? true) (ref nil))
+     (r! ~name ~form)))
+
+(defr make-ui! (show-ui (first ui) (second ui)))
+
+(defr time-html
+  (let [body (second ui)
+        [_ & body] body]
+    (clojure.string/join
+     " "
+     (for [elem body
+           [type props] (if (seq? elem)
+                  elem
+                  (list elem))]
+       (case type
+         :QLabel
+         (format "<h2>%s</h2>" (:text props))
+         :QPushButton
+         (format "<button>%s</button>" (:text props))
+         "")))
+    
+    ))
+(defr add-now-handler
+  (fn []
+    (r! times (conj times (now)))))
+
+(defr web-ui!
+  (show-ui :webui
+           [:QWebView {:html time-html}]))
+
+(defn now []
+  (java.util.Date.))
+(defr ui [:time-tracker3
+          [:QVBoxWidget
+           [:QLabel {:text "Time Tracker"}]
+           (for [time times]
+             [:QLabel {:text (str time)}])
+           [:QPushButton {:text "Add now"
+                          :clicked add-now-handler}]
+           [:QPushButton {:text "Clear"
+                          :clicked (fn []
+                                     (r! times []))}]
+           ]])
+
+(defr times [])
+
+(defn update-ui []
+  (try
+    (let [renv @renv
+          ns (:ns renv)]
+     (show-ui :plain5
+              [:QVBoxWidget {}
+               (apply list
+                      (for [[name form] (:forms renv)
+                            
+                            :let [var (ns-resolve ns name)]
+                            :when var
+                            :let [val (-> var deref deref)
+                                  val-str (pr-str val)
+                                  make-s (fn [s n]
+                                           (subs s 0 (min n (count s))))]]
+                        [:QLabel {:text (clojure.string/join
+                                         " "
+                                         [name
+                                          (make-s (pr-str form) 20)
+                                          (make-s (pr-str val) 20)
+                                          ])}]))]
+              ))
+   (catch Exception e
+     (msg (with-out-str
+            (clojure.stacktrace/print-stack-trace e))))))
+
+
+
+
+(def watches (agent #{}))
+(add-watch renv :ui-helper
+           (fn [key ref old renv]
+             (send watches
+                    (fn [watches]
+                      (let [ref-names (set (keys (:forms renv)))
+                            removed (clojure.set/difference watches ref-names)
+                            added (clojure.set/difference ref-names watches)
+                            ns (:ns renv)]
+                        (doseq [name removed]
+                          (remove-watch (->> name (ns-resolve ns) deref)
+                                        :ui-helper))
+                        (doseq [name added]
+                          (add-watch (->> name (ns-resolve ns) deref)
+                                     :ui-helper
+                                     (fn [_ _ _ val]
+                                       (update-ui))))
+                        ref-names)))))
+
+
 
 
 
