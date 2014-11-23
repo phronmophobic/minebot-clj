@@ -12,7 +12,8 @@
                  [enlive "1.1.5"]
                  ;; [org.clojure/tools.analyzer "0.6.1"]
                  [org.clojure/tools.analyzer.jvm "0.6.1"]
-
+                 [org.marianoguerra/clj-rhino "0.2.1"]
+                 [org.clojars.houshuang/keymaster-clj "0.1.0"]
                  [qtjambi/qtjambi "4.8.6"]
                  [qtjambi/qtjambi-macosx "4.8.6"]
                  ]

@@ -537,9 +537,10 @@
   (let [options-map (into {} (map vec (partition 2 options)))
         pname (-> options-map :name)
         [cname bytecode] (generate-class options-map)]
-    (let [pc-effect (. ^DynamicClassLoader (deref clojure.lang.Compiler/LOADER) (defineClass pname bytecode options))
-          ]
-      pc-effect)))
+    (when *compile-files*
+      (let [pc-effect (. ^DynamicClassLoader (deref clojure.lang.Compiler/LOADER) (defineClass pname bytecode options))
+            ]
+        pc-effect))))
 
 (defmacro defwidget [name [& fields] [& interfaces] [& signals] & methods]
   (let [[super-class interfaces] (if (isa? (first interfaces) QObject)
