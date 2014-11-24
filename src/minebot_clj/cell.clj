@@ -1,6 +1,6 @@
 (ns minebot-clj.cell
   (:require 
-            [clojure.core.async :refer [go >! >!! <! <!!  put! chan
+   [clojure.core.async :refer [go >! >!! <! <!!  put! chan
                                         close! timeout
                                         alts! alts!! thread
                                         ] :as async]
@@ -175,19 +175,18 @@
 
 
 
-(defprotocol IEnvironment
-  (set-form
-    [this name form]
-    [this name form dep])
-  (set-val [this name newval])
+;; (defprotocol IEnvironment
+;;   (set-form
+;;     [this name form]
+;;     [this name form dep])
+;;   (set-val [this name newval])
 
-  (shake [this name]))
+;;   (shake [this name]))
 
 (defprotocol IRefEnvironment
-  (set-form
-    [this name evaluable]
-    [this name evaluable dep])
-  (shake! [this name]))
+  (shake! [this name])
+  (set-ref [this name ref])
+  (set-form [this name evaluable dep]))
 
 (def core-syms (set (keys (ns-publics 'clojure.core))))
 
@@ -204,48 +203,35 @@
 
 
 
-(defrecord RefEnvironment [evaluables deps]
+(defrecord RefEnvironment [evaluables deps refs]
   IRefEnvironment
-  (set-form [this name evaluable]
-    (set-form this name evaluable nil))
+  (set-ref [this name ref]
+    (RefEnvironment. evaluables
+                     deps
+                     (assoc refs name ref)))
   (set-form [this name evaluable dep]
     (let [evaluables (assoc evaluables name evaluable)
-          ;; locals (assoc locals name (into {}
-          ;;                                 (for [[k v] form-locals
-          ;;                                       :when (contains? (set (cell-deps form))
-          ;;                                                        k)]
-          ;;                                   [k v])))
-          deps (if dep
-                 (assoc deps name (set dep))
-                 (assoc deps name (disj (set (dependencies evaluable))
-                                        name)))]
+          deps (assoc deps name (set dep))]
       (RefEnvironment. evaluables
-                       deps)))
+                       deps
+                       refs)))
+
   (shake! [this name]
     (let [deps (get deps name)
-          dep-vars (into {}
-                         (for [dep deps]
-                           [dep (ns-resolve (the-ns 'minebot-clj.cell) dep)]))]
-      (if (not (every? identity (vals dep-vars)))
+          ]
+      (if (not (every? #(contains? refs %) deps))
         (do
           (msg "couldn't find args "
-               (for [[dep var] dep-vars
-                     :when (nil? var)]
+               (for [dep deps
+                     :when (not (contains? refs dep))]
                  dep))
           nil)
         (let [evaluable (get evaluables name)
               bindings (into {}
-                             (for [[dep var] dep-vars
-                                   :when (:reactive? (meta var))]
-                               [dep (deref (deref var))]))
-              ;; form-locals (get locals name)
-              ;; bindings (into bindings
-              ;;                (for [k (keys form-locals)]
-              ;;                  [k `(get *locals* (quote ~k))]))
-              ;; eval-form `(let [~@(apply concat bindings)]
-              ;;                       ~form)
-              ref (-> (ns-resolve (the-ns 'minebot-clj.cell) name)
-                      deref)
+                             (for [dep deps
+                                   :let [val (-> refs (get dep) deref)]]
+                               [dep val]))
+              ref (get refs name)
               old-val (deref ref)
               new-val (evaluate evaluable bindings)]
           ;; (msg "updating " name)
@@ -253,7 +239,11 @@
             (ref-set ref new-val)
             (doseq [[other-name other-deps] (:deps this)
                     :when (contains? other-deps name)]
-              (shake! this other-name))))))))
+              (shake! this other-name)))))))
+  
+  )
+(defn ref-environment []
+  (RefEnvironment. {} {} {}))
 
 
 ;;(defrecord Environment [refs forms deps])
@@ -261,67 +251,67 @@
    forms are {refs to forms}
    deps are {refs to refs}
 "
-(defrecord Environment [vals forms deps]
+;; (defrecord Environment [vals forms deps]
 
-  IEnvironment
-  (set-form [this name form]
-    (set-form this name form nil))
-  (set-form [this name form dep]
-    (let [forms (assoc forms name form)
+;;   IEnvironment
+;;   (set-form [this name form]
+;;     (set-form this name form nil))
+;;   (set-form [this name form dep]
+;;     (let [forms (assoc forms name form)
 
-          deps (if dep
-                (assoc deps name (set dep))
-                (assoc deps name (->> (cell-deps name form)
-                                      (remove core-syms)
-                                      set)))]
-      (shake (Environment. vals forms deps) name)))
+;;           deps (if dep
+;;                 (assoc deps name (set dep))
+;;                 (assoc deps name (->> (cell-deps name form)
+;;                                       (remove core-syms)
+;;                                       set)))]
+;;       (shake (Environment. vals forms deps) name)))
 
-  (set-val [this name newval]
-    (let [has-val? (contains? vals name)
-          oldval (get vals name)]
-      (if (or (not has-val?) (not= oldval newval))
-          (let [env (Environment. (assoc vals name newval)
-                                  forms
-                                  deps)]
-            (reduce-kv (fn [env other-name other-deps]
-                         (if (contains? other-deps name)
-                           (shake env other-name)
-                           env))
-                       env
-                       deps))
-          this)))
+;;   (set-val [this name newval]
+;;     (let [has-val? (contains? vals name)
+;;           oldval (get vals name)]
+;;       (if (or (not has-val?) (not= oldval newval))
+;;           (let [env (Environment. (assoc vals name newval)
+;;                                   forms
+;;                                   deps)]
+;;             (reduce-kv (fn [env other-name other-deps]
+;;                          (if (contains? other-deps name)
+;;                            (shake env other-name)
+;;                            env))
+;;                        env
+;;                        deps))
+;;           this)))
 
 
-  (shake [this name]
-    (let [form (get forms name)
-          args (->> (cell-deps name form)
-                    (remove core-syms))]
-      (if (not (every? #(contains? vals %) args))
-        (do
-          (msg "couldn't find arg " (remove #(contains? vals %) args))
-          this)
-        (let [nsym (gensym)
-              to-eval `(let [~@(->> args
-                                    (mapcat
-                                     (fn [arg]
-                                       [arg (symbol (str nsym) (str arg))])))]
-                         ~form)
-              newval (try
-                       (let [ns (create-ns nsym)]
-                         (eval '(require '[clojure.zip :as z]))
-                         (eval '(use '[minebot-clj.zipper :exclude [zseq]]))
-                         (eval '(import 'com.trolltech.qt.core.QPoint))
-                         (doseq [arg args]
-                           (intern ns arg (get vals arg)))
-                         (eval to-eval))
-                       (catch Exception e
-                         (msg "error evaling!" e)
-                         (throw e))
-                       (finally
-                         (remove-ns nsym)))]
-          (set-val this name newval))))
+;;   (shake [this name]
+;;     (let [form (get forms name)
+;;           args (->> (cell-deps name form)
+;;                     (remove core-syms))]
+;;       (if (not (every? #(contains? vals %) args))
+;;         (do
+;;           (msg "couldn't find arg " (remove #(contains? vals %) args))
+;;           this)
+;;         (let [nsym (gensym)
+;;               to-eval `(let [~@(->> args
+;;                                     (mapcat
+;;                                      (fn [arg]
+;;                                        [arg (symbol (str nsym) (str arg))])))]
+;;                          ~form)
+;;               newval (try
+;;                        (let [ns (create-ns nsym)]
+;;                          (eval '(require '[clojure.zip :as z]))
+;;                          (eval '(use '[minebot-clj.zipper :exclude [zseq]]))
+;;                          (eval '(import 'com.trolltech.qt.core.QPoint))
+;;                          (doseq [arg args]
+;;                            (intern ns arg (get vals arg)))
+;;                          (eval to-eval))
+;;                        (catch Exception e
+;;                          (msg "error evaling!" e)
+;;                          (throw e))
+;;                        (finally
+;;                          (remove-ns nsym)))]
+;;           (set-val this name newval))))
 
-))
+;; ))
 
 ;; (defmacro watch [name]
 ;;   `(add-watch ~name :p
@@ -347,7 +337,7 @@
 
 
 (defonce app (atom nil))
-(def env (atom (Environment. {} {} {})))
+;; (def env (atom (Environment. {} {} {})))
 (def aliases (atom {}))
 
 (defn fetch [url]
@@ -1052,13 +1042,38 @@
         p (.getParameterTypes m)]
     (alength p)))
 
-(defn my-partial1 [f arg1]
+(defn wrap-signal-fn [ns f arg1]
   (case (arg-count f)
-    0 (fn [] (f))
-    1 (fn [] (f arg1))
-    2 (fn [arg2] (f arg1 arg2))
-    3 (fn [arg2 arg3] (f arg1 arg2 arg3))
-    4 (fn [arg2 arg3 arg4] (f arg1 arg2 arg3 arg4))))
+    0 (fn [] (try
+               (binding [*ns* ns]
+                 (f))
+               (catch Exception e
+                 (msg (with-out-str
+                        (clojure.stacktrace/print-stack-trace e))))))
+    1 (fn [] (try
+               (binding [*ns* ns]
+                 (f arg1))
+               (catch Exception e
+                 (msg (with-out-str
+                        (clojure.stacktrace/print-stack-trace e))))))
+    2 (fn [arg2] (try
+                   (binding [*ns* ns]
+                     (f arg1 arg2))
+                   (catch Exception e
+                     (msg (with-out-str
+                            (clojure.stacktrace/print-stack-trace e))))))
+    3 (fn [arg2 arg3] (try
+                        (binding [*ns* ns]
+                          (f arg1 arg2 arg3))
+                        (catch Exception e
+                          (msg (with-out-str
+                                 (clojure.stacktrace/print-stack-trace e))))))
+    4 (fn [arg2 arg3 arg4] (try
+                             (binding [*ns* ns]
+                               (f arg1 arg2 arg3 arg4))
+                             (catch Exception e
+                               (msg (with-out-str
+                                      (clojure.stacktrace/print-stack-trace e))))))))
 
 
 (defmethod set-property :default [node kv old-val]
@@ -1072,7 +1087,7 @@
                            (catch java.lang.NoSuchFieldException e))]
             (if (and field
                      (.startsWith (.getName (.getType field)) "com.trolltech.qt.QSignalEmitter$Signal"))
-              (ui/connect (.get field node) (my-partial1 val (vary-meta (-> kv z/up z/up)
+              (ui/connect (.get field node) (wrap-signal-fn *ns* val (vary-meta (-> kv z/up z/up)
                                                                         assoc :node node)))
               (msg "got unknown property " property)))))))
 )
@@ -1181,19 +1196,21 @@
   ([ui]
      (show-ui :default ui))
   ([key ui]
-     (let [work (fn []
-                  (try
-                    (let [[node old] (get @uis key)
-                          new-node (merge-ui! node
-                                              old (myzip ui))]
-                      (doto new-node
-                        #_(update-size)
-                        (.show)
-                        )
-                      (swap! uis assoc key [new-node ui]))
-                    (catch Exception e
-                      (msg e)
-                      (msg (with-out-str (clojure.stacktrace/print-stack-trace e))))))]
+     (let [outer-ns *ns*
+           work (fn []
+                  (binding [*ns* outer-ns]
+                    (try
+                      (let [[node old] (get @uis key)
+                            new-node (merge-ui! node
+                                                old (myzip ui))]
+                        (doto new-node
+                          #_(update-size)
+                          (.show)
+                          )
+                        (swap! uis assoc key [new-node ui]))
+                      (catch Exception e
+                        (msg e)
+                        (msg (with-out-str (clojure.stacktrace/print-stack-trace e)))))))]
        (if (nil? (QCoreApplication/instance))
          (.execute
           (.getNonBlockingMainQueueExecutor (com.apple.concurrent.Dispatch/getInstance))
@@ -1210,28 +1227,36 @@
 
 
 
-(def renv (atom (RefEnvironment. {} {})))
+(def renv (atom (ref-environment)))
 (defmacro r! [name form]
   `(do
-     (let [form# (quote ~form) 
+     (let [form# (quote ~form)
            evaluable# (if (evaluable? form#)
                         form#
-                        (->ClojureEvaluable (the-ns 'minebot-clj.cell) form#
+                        (->ClojureEvaluable *ns* form#
                                             (into {}
                                                   [~@(for [[k _] &env]
                                                        [(list 'quote k)
-                                                        k])])))]
-       (swap! renv set-form (quote ~name) evaluable#)
+                                                        k])])))
+           deps# (-> (dependencies evaluable#)
+                     (->> (remove (fn [name#]
+                                    (when-let [var# (ns-resolve *ns* name#)]
+                                      (-> var# meta :reactive? not)))))
+                     set 
+                     (disj ~name))]
+       (swap! renv set-form (quote ~name) evaluable# deps#)
        (dosync
         (shake! (deref renv) (quote ~name)))
        (when (instance? clojure.lang.IDeref ~name)
          (deref ~name)))))
 (defmacro defr [name form]
   `(do
-     (defonce ~(vary-meta name assoc :reactive? true) (ref nil))
+     (let [ref# (ref nil)]
+      (defonce ~(vary-meta name assoc :reactive? true) ref#)
+      (swap! renv set-ref (quote ~name) ref#))
      (r! ~name ~form)))
 
-
+ 
 ;; (defn update-ui []
 ;;   (try
 ;;     (let [renv @renv
@@ -1284,77 +1309,6 @@
 ;;                            (msg (with-out-str
 ;;                                   (clojure.stacktrace/print-stack-trace e)))))
 ;;                         ref-names)))))
-
-
-(defn content= [content]
-  (enlive/pred #(= (list content) (:content %))))
-
-(defr url "http://www.pandora.com")
-
-(defn signed-in? [html]
-  (boolean
-   (seq (enlive/select html
-                       [(content= "smith.adriane@gmail.com")]))))
-
-(defr send-javascript! (fn [_] (msg "no javscript yet!")))
-(defn play! []
-  (send-javascript!
-   "$('.playButton a').click()"))
-(defn pause! []
-  (send-javascript!
-   "$('.pauseButton a').click()"))
-(defn toggle-play! []
-  (send-javascript!
-   "var pauseButton = $('.pauseButton a:visible');
-var playButton =  $('.playButton a:visible');
-playButton.click();
-pauseButton.click();")
-  )
-(defn skip! []
-  (send-javascript!
-   "$('.skipButton a').click()"))
-
-(defr pandora-ui
-  [:QWebView {:url "http://www.pandora.com/account/sign-in"
-              :plugins true
-              :loadFinished
-              (fn [ui]
-                         
-                (try
-                  (when-let [webview (-> ui meta :node)]
-                    (let [page (.page webview)
-                          frame (.currentFrame page)
-                          html (enlive/html-snippet
-                                (.toHtml frame))
-                          url (.toString (.-url webview))]
-                              
-                      (r! send-javascript!
-                          (fn [js]
-                            (ui/qt
-                             (-> webview
-                                 .page
-                                 .currentFrame
-                                 (.evaluateJavaScript js)))))
-
-                      (when (not (signed-in? html))
-                        (.evaluateJavaScript frame
-                                             "document.getElementsByName(\"email\")[0].value =\"smith.adriane@gmail.com\";"))))
-                  (catch Exception e
-                    (msg (with-out-str
-                           (clojure.stacktrace/print-stack-trace e))))))}])
-
-(defn -main [& args]
-  (defr make-ui!
-    (show-ui :pandora
-             pandora-ui))
-  
-  (require 'keymaster.core)
-  (let []
-    (defonce provider ((resolve 'keymaster.core/make-provider)))
-    ((resolve 'keymaster.core/register) provider "F8" (fn [arg]
-                                               (toggle-play!)))
-    ((resolve 'keymaster.core/register) provider "F9" (fn [arg]
-                                               (skip!)))))
 
 
 

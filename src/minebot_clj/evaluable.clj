@@ -45,10 +45,6 @@
     (let [deps (cell-deps form)
           deps (remove #(contains? (set (keys locals))
                                    %)
-                       deps)
-          deps (filter (fn [dep]
-                         (when-let [var (ns-resolve ns dep)]
-                           (-> var meta :reactive?)))
                        deps)]
 
       deps)))
