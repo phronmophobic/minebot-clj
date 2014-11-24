@@ -1,12 +1,14 @@
 (ns minebot-clj.cwidget
 
   (:import (com.trolltech.qt.core QObject)
-           (com.trolltech.qt.gui QWidget)))
+           (com.trolltech.qt.gui QWidget)
+           (java.lang.reflect Modifier Constructor)
+           (clojure.asm ClassWriter ClassVisitor Opcodes Type)
+           (clojure.asm.commons Method GeneratorAdapter)
+           (clojure.lang IPersistentMap DynamicClassLoader RT)
 
-(import '(java.lang.reflect Modifier Constructor)
-        '(clojure.asm ClassWriter ClassVisitor Opcodes Type)
-        '(clojure.asm.commons Method GeneratorAdapter)
-        '(clojure.lang IPersistentMap DynamicClassLoader))
+           ))
+
 
 ;(defn method-sig [^java.lang.reflect.Method meth]
 ;  [(. meth (getName)) (seq (. meth (getParameterTypes)))])
@@ -537,10 +539,12 @@
   (let [options-map (into {} (map vec (partition 2 options)))
         pname (-> options-map :name)
         [cname bytecode] (generate-class options-map)]
-    (when *compile-files*
-      (let [pc-effect (. ^DynamicClassLoader (deref clojure.lang.Compiler/LOADER) (defineClass pname bytecode options))
-            ]
-        pc-effect))))
+    (let [compile-effect (when *compile-files*
+                           (clojure.lang.Compiler/writeClassFile pname bytecode))
+          pc-effect (or (RT/loadClassForName pname)
+                        (. ^DynamicClassLoader (deref clojure.lang.Compiler/LOADER) (defineClass pname bytecode options)))
+          ]
+      pc-effect)))
 
 (defmacro defwidget [name [& fields] [& interfaces] [& signals] & methods]
   (let [[super-class interfaces] (if (isa? (first interfaces) QObject)
