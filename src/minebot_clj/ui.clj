@@ -168,13 +168,15 @@
                                          (.setAutoDefault false))]]
                     (.addWidget layout
                                 button)
-                    (connect (.clicked button)
-                             (fn []
-                               (put! @ch command))))
+                    (qt
+                     (connect (.clicked button)
+                              (fn []
+                                (put! @ch command)))))
                   (.setLayout dialog layout)
-                  (connect (.aboutToQuit @app)
-                           (fn []
-                             (put! @ch :exit)))
+                  (qt
+                   (connect (.aboutToQuit @app)
+                            (fn []
+                              (put! @ch :exit))))
                   (.show dialog)
                   (swap! msg conj "about to exec")
                   (.exec @app)

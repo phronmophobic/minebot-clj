@@ -93,22 +93,24 @@ pauseButton.click();")
                       (.evaluateJavaScript frame
                                            "document.getElementsByName(\"email\")[0].value =\"smith.adriane@gmail.com\";null;")))))}])
 
-
 (defn -main [& args]
+  (.execute
+   (.getBlockingMainQueueExecutor (com.apple.concurrent.Dispatch/getInstance))
+   (fn []
+     (try
+       (ui/init)
+       (show-ui :pandora
+                @pandora-ui)
 
-  (show-ui :pandora
-           @pandora-ui)
-  
-  (future
-    (require 'keymaster.core)
-    (defonce provider ((resolve 'keymaster.core/make-provider)))
-    ((resolve 'keymaster.core/register) provider "F8" (fn [arg]
-                                               (toggle-play!)))
-    ((resolve 'keymaster.core/register) provider "F9" (fn [arg]
-                                               (skip!))))
-  (let [ch (chan)]
-    (ui/qt
-     (connect (.aboutToQuit (QCoreApplication/instance))
-              (fn []
-                (put! ch true))))
-    (<!! ch)))
+       (go
+         (require 'keymaster.core)
+         (defonce provider ((resolve 'keymaster.core/make-provider)))
+         ((resolve 'keymaster.core/register) provider "F8" (fn [arg]
+                                                             (toggle-play!)))
+         ((resolve 'keymaster.core/register) provider "F9" (fn [arg]
+                                                             (skip!))))
+
+       (.exec (QCoreApplication/instance))
+       (catch Exception e
+         (msg e)))))
+  (java.lang.System/exit 0))

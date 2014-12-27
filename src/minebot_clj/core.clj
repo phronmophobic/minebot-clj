@@ -8,7 +8,11 @@
             [minebot-clj.astar :refer [astar manhattan-distance euclidean-distance]]
             [minebot-clj.model :as model]
             [minebot-clj.ui :as ui]
+            [minebot-clj.cell :as cell]
+            [minebot-clj.environment :as env :refer [set-ref shake! set-form]]
+            [clojure.data.json :as json]
             )
+  (:use [minebot-clj.evaluable])
   (:import (java.net Socket ServerSocket)
            java.util.zip.Inflater
            (java.io PrintWriter
@@ -21,6 +25,91 @@
                     ByteArrayInputStream
                     DataInputStream
                     DataOutputStream))
+  (:import (com.trolltech.qt.gui QApplication QPushButton
+                                 ;; Checkbox with a text label
+                                 QCheckBox
+                                 ;; Combined button and popup list
+                                 QComboBox
+                                 ;; Vista style command link button
+                                 QCommandLinkButton
+                                 ;; Widget for editing dates based on the QDateTimeEdit widget
+                                 QDateEdit
+                                 ;; Widget for editing dates and times
+                                 QDateTimeEdit
+                                 ;; Rounded range control (like a speedometer or potentiometer)
+                                 QDial
+                                 ;; Spin box widget that takes doubles
+                                 QDoubleSpinBox
+                                 ;; Focus frame which can be outside of a widget's normal paintable area
+                                 QFocusFrame
+                                 ;; Combobox that lets the user select a font family
+                                 QFontComboBox
+                                 ;; Displays a number with LCD-like digits
+                                 QLCDNumber
+                                 ;; Text or image display
+                                 QLabel
+                                 ;; One-line text editor
+                                 QLineEdit
+                                 ;; Menu widget for use in menu bars, context menus, and other popup menus
+                                 QMenu
+                                 ;; Horizontal or vertical progress bar
+                                 QProgressBar
+                                 ;; Command button
+                                 QPushButton
+                                 ;; Radio button with a text label
+                                 QRadioButton
+                                 ;; Scrolling view onto another widget
+                                 QScrollArea
+                                 ;; Vertical or horizontal scroll bar
+                                 QScrollBar
+                                 ;; Resize handle for resizing top-level windows
+                                 QSizeGrip
+                                 ;; Vertical or horizontal slider
+                                 QSlider
+                                 ;; Spin box widget
+                                 QSpinBox
+                                 ;; Tab bar, e.g. for use in tabbed dialogs
+                                 QTabBar
+                                 ;; Stack of tabbed widgets
+                                 QTabWidget
+                                 ;; Widget for editing times based on the QDateTimeEdit widget
+                                 QTimeEdit
+                                 ;; Column of tabbed widget items
+                                 QToolBox
+                                 ;; Quick-access button to commands or options, usually used inside a QToolBar
+                                 QToolButton
+                                 QMainWindow
+                                 QDialog
+
+                                 QVBoxLayout
+                                 QHBoxLayout
+
+                                 QGridLayout
+                                 QTextEdit
+                                 QGroupBox
+                                 QWidget
+
+                                 QKeyEvent
+                                 QPainter
+                                 QPen
+
+                                 )
+           clojure.lang.Reflector
+           com.trolltech.qt.gui.QPainter$RenderHints
+           com.trolltech.qt.gui.QPalette
+           (com.trolltech.qt.core QCoreApplication
+                                  QUrl
+                                  QPoint
+                                  QRect
+                                  QSize
+                                  QObject
+                                  Qt)
+           (com.trolltech.qt.webkit QWebView )
+           (com.trolltech.qt.webkit.QWebView$ )
+           (com.trolltech.qt.phonon VideoPlayer
+                                    VideoWidget
+                                    MediaSource)
+           (com.trolltech.qt QVariant))
   (:gen-class))
 
 (def messages (atom []))
@@ -331,14 +420,14 @@
 
 (defpacket handshake
    0x00
-   :protocol-version :varint 4
+   :protocol-version :varint 5
    :server-host :string host
    :server-port :unsigned-short port
    :next-state :varint 2)
 
 (defpacket respawn
   0x16
-  :respawn :byte 0)
+  :respawn :varint 0)
 
 (defpacket login
    0x00
@@ -638,10 +727,14 @@
   (doseq [ch @all-chans]
     (close! ch))
   (reset! all-chans []))
+
+;; digital ocean
 (defn do-something
   ([] (let [[host port] (protocol/discover-minecraft-server)]
         (do-something host port)))
-  ([port] (do-something "0.0.0.0" port))
+  ([host]
+   (let [host (get {:do "162.243.14.228"} host)]
+     (do-something host 25565)))
   ([host port]
      (let [inchan (chan 100)
            mult (async/mult inchan)
@@ -659,16 +752,16 @@
        (msg "finished connecting")
        
        (goe
+        (msg "start")
         (>! outchan (handshake host port))
+        (msg "handshook")
         (<! (timeout 1000))
         (>! outchan (login "foo2"))
+        (msg "logged in")
         (<! (timeout 1000))
-        #_(>! outchan (chat "/gamemode 1"))
-        
-        
-
+        (>! outchan (chat "/gamemode 1"))
         (>! outchan (chat "hello"))
-        ;;     (>! outchan (respawn))
+            ;; (>! outchan (respawn))
         )
 
 
@@ -676,7 +769,7 @@
        (do-position-update (async/tap mult (chan)) outchan position looking path)
        (update-world (async/tap mult (chan)) world client-packets)
        (track-entities (async/tap mult (chan 10)))
-       (follow-ui-commands (async/tap mult (chan 10)) outchan)
+       #_(follow-ui-commands (async/tap mult (chan 10)) outchan)
        #_(follow-players (async/tap mult (chan 10)) outchan)
 
 
@@ -952,6 +1045,8 @@
     (msg "stopped following")))
   )
 
+
+
 (defn follow-ui-commands [ch out]
   (let [done? (atom false)
         command-chan (ui/command-ui)]
@@ -1212,4 +1307,291 @@
 ;; (clojure.pprint/pprint (reverse (sort-by second ll)))
 
 
+(defn ui-work* [work]
+  (if (nil? (QCoreApplication/instance))
+    (.execute
+     (.getNonBlockingMainQueueExecutor (com.apple.concurrent.Dispatch/getInstance))
+     (fn []
+       (try
+         (ui/init)
+         (work)
+         (.exec (QCoreApplication/instance))
+         (catch Exception e
+           (msg e)))))
+    (QApplication/invokeLater work)))
 
+(defmacro ui-work [& body]
+  `(let [outer-ns# *ns*
+         work# (fn []
+                 (binding [*ns* outer-ns#]
+                   (try
+                     ~@body
+                     (catch Exception e#
+                       (msg e#)
+                       (msg (with-out-str (clojure.stacktrace/print-stack-trace e#)))))))]
+     (ui-work* work#)))
+
+
+
+
+;; (barf)
+
+(def renv (atom (env/environment)))
+(defmacro r! [name form]
+  `(do
+     (let [form# (quote ~form)
+           evaluable# (if (evaluable? form#)
+                        form#
+                        (->ClojureEvaluable *ns* form#
+                                            (into {}
+                                                  [~@(for [[k _] &env]
+                                                       [(list 'quote k)
+                                                        k])])))
+           deps# (-> (dependencies evaluable#)
+                     (->> (remove (fn [name#]
+                                    (when-let [var# (ns-resolve *ns* name#)]
+                                      (-> var# meta :reactive? not)))))
+                     set 
+                     (disj ~name))]
+       (swap! renv set-form (quote ~name) evaluable# deps#)
+       (dosync
+        (shake! (deref renv) (quote ~name)))
+       (when (instance? clojure.lang.IDeref ~name)
+         (deref ~name)))))
+(defmacro defr [name form]
+  `(do
+     (defonce ~(vary-meta name assoc :reactive? true) (ref nil))
+     (swap! renv set-ref (quote ~name) ~name)
+     (r! ~name ~form)))
+
+(def handlers (atom {}))
+
+(defn button [text handler]
+  (let [key (hash handler)]
+    (swap! handlers assoc key handler)
+    [:button {:onclick (str "send("key"); return false;")}
+     text]))
+
+(definterface ChannelInterface
+  (^void put [^String val]))
+
+
+
+
+(let [outer-ns *ns*]
+  (defn channel-bridge []
+    (let [ch (chan)]
+      (go
+        (loop []
+          (binding [*ns* outer-ns]
+            
+            (when-let [str-val (<! ch)]
+              (try
+               (let [val (json/read-str str-val)
+                     [handler-hash & args] val
+                     handler (get @handlers handler-hash)]
+                 (msg args)
+                 (when handler
+                   (apply handler args)))
+               (catch Exception e
+                 (msg (with-out-str
+                        (clojure.stacktrace/print-stack-trace e)))))
+              (recur))
+            )))
+      (proxy [QObject minebot_clj.core.ChannelInterface] []
+        (put [^String str-val]
+          (put! ch str-val))))))
+
+(defn input [text handler]
+  (let [key (hash handler)]
+    (swap! handlers assoc key handler)
+    [:input {:onchange (str "send("key", event.target.value); return false;")
+             :value text
+             :type "text"
+             :size "60"}]))
+
+(defn textarea []
+  [:textarea {:rows 30
+              :cols 100}])
+
+(defr status nil)
+(defr ch nil)
+(defr speech "bark!")
+(defr summon "Pig")
+(defr custom-command "")
+(defr html
+  [:html
+   [:head
+    [:script {:type "text/javascript"}
+     "function send(){
+try{
+window.channels.put( JSON.stringify(Array.prototype.slice.call(arguments) ));
+}catch (e){
+alert(e + '');
+}
+}
+"]
+    [:body
+     [:h1 "Foo."]
+     [:div "Host:"]
+     [:input {:type "text"
+              :value "162.243.14.228"}]
+     [:br]
+     (button "Connect"
+             (fn []
+               (try
+                (let [mine-ch (do-something :do)]
+                  (r! ch mine-ch))
+                (catch Exception e
+                  (msg e)))))
+     [:button "Connect LAN"]
+     [:hr]
+     [:h3 "Commands"]
+
+     (button "Speak!"
+             (fn []
+               (put! ch (chat speech))))
+     (input speech
+            (fn [s]
+              (r! speech s)))
+     [:br]
+
+     (button "Come"
+             (fn []
+               (put! ch (try-move-to-player ch))))
+     [:br]
+     (button "Respawn"
+             (fn []
+               (put! ch (respawn ))))
+     [:br]
+     (button "Creative mode"
+             (fn []
+               (put! ch (chat "/gamemode 1"))))
+     [:br]
+     (button "Make it day"
+            (fn []
+              (put! ch (chat "/time set day"))))
+     [:br]
+     (button "Summon"
+             (fn []
+               (put! ch (chat (str "/summon " summon)))))
+     (input summon
+            (fn [s]
+              (r! summon s)))
+     [:br]
+
+     (button "Command"
+             (fn []
+               (put! ch (chat custom-command))))
+     (input custom-command
+            (fn [s]
+              (r! custom-command s)))
+     [:br]
+     (button "up"
+             (fn []
+               (let [[x y z] (integerize-position @position)]
+               (reset! path [[x
+                              (inc y)
+                              z]]))))
+     [:br]
+     (button "down"
+             (fn []
+               (let [[x y z] (integerize-position @position)]
+                 (reset! path [[x
+                                (dec y)
+                                z]]))))
+     [:br]
+     (button "turn"
+             (fn []
+               (swap! looking
+                    (fn [looking]
+                      (if looking
+                        (let [[yaw pitch] looking]
+                          [(+ 90 yaw) pitch])
+                        [0 0])))))
+     [:br]
+     (button "dig"
+             (fn []
+               (do
+                 (when @position
+                   (let [face 0
+                         [px py pz] (integerize-position @position)
+                         [x y z] [(inc px) (dec py) pz]
+                         status 2]
+                     (put! ch (player-digging 0 x y z 0))
+                     (put! ch (player-digging status x y z 0)))))))
+     [:br]
+     (button "forward"
+             (fn []
+               (let [[x y z] (integerize-position @position)]
+               (reset! path [[(inc x)
+                              y
+                              z]]))))
+     [:br]
+     (button "left"
+             (fn []
+               (let [[x y z] (integerize-position @position)]
+                 (reset! path [[x
+                                y
+                                (inc z)]]))
+               ))
+     [:br]
+     (button "right"
+             (fn []
+               (let [[x y z] (integerize-position @position)]
+               (reset! path [[x
+                              y
+                              (dec z)]]))))
+     [:br]
+     (button "back"
+             (fn []
+               (let [[x y z] (integerize-position @position)]
+                 (let [[x y z] (integerize-position @position)]
+                   (reset! path [[(dec x)
+                                  y
+                                  z]])))))
+
+     [:br]
+
+     (textarea)
+     [:br]
+     (button "Execute python"
+             (fn []))
+     
+     
+     
+]
+    ]])
+
+
+
+
+
+(defr minebot-ui nil)
+
+(let [outer-ns *ns*]
+  (defn -main [& args]
+    (try
+     (binding [*ns* outer-ns]
+       (r! minebot-ui
+           (cell/show-ui :minebot
+                         [:QWebView
+                          {:html
+                           (hiccup.page/html5
+                            html)
+                           :bridge [["channels" (channel-bridge)]]}])))
+     
+     (catch Exception e
+       (msg (with-out-str
+              (clojure.stacktrace/print-stack-trace e)))
+       nil))
+    (<!!
+     (let [quit-ch (chan)]
+       (.execute
+        (.getNonBlockingMainQueueExecutor (com.apple.concurrent.Dispatch/getInstance))
+        (fn []
+          (try
+            (>!! quit-ch true)
+            (catch Exception e
+              (msg e)))))
+       quit-ch))))

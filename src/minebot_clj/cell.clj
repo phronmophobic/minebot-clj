@@ -2,17 +2,30 @@
   (:require 
    [clojure.core.async :refer [go >! >!! <! <!!  put! chan
                                         close! timeout
-                                        alts! alts!! thread
+                               alts! alts!! thread
+                               go-loop
                                         ] :as async]
-            [clojure.stacktrace]
+   [clojure.stacktrace]
             [minebot-clj.astar :refer [astar manhattan-distance euclidean-distance]]
             [minebot-clj.model :as model]
             [minebot-clj.ui :as ui :refer [connect]]
             [minebot-clj.analyze :refer [cell-deps]]
+            [minebot-clj.environment :as env :refer [set-ref! ]]
             clj-http.client
             [net.cgrand.enlive-html :as enlive]
             [minebot-clj.cwidget :refer [defwidget]]
-            [clojure.zip :as z])
+            [clojure.zip :as z]
+            [minebot-clj.environment :as env :refer [set-ref shake! set-form]]
+            ;; time tracker
+            [hiccup.core :as  hiccup]
+            [hiccup.page :as page]
+            [hiccup.bootstrap.page]
+
+            [clojure.data.json :as json]
+
+            hiccup.util)
+  (:import (org.w3c.tidy Tidy))
+  (:import (java.io ByteArrayInputStream ByteArrayOutputStream))
   (:use [minebot-clj.zipper :exclude [zseq] :as zip])
   (:use [minebot-clj.evaluable])
   (:import (com.trolltech.qt.gui QApplication QPushButton
@@ -183,12 +196,12 @@
 
 ;;   (shake [this name]))
 
-(defprotocol IRefEnvironment
-  (shake! [this name])
-  (set-ref [this name ref])
-  (set-form [this name evaluable dep]))
+;; (defprotocol IRefEnvironment
+;;   (shake! [this name])
+;;   (set-ref [this name ref])
+;;   (set-form [this name evaluable dep]))
 
-(def core-syms (set (keys (ns-publics 'clojure.core))))
+;; (def core-syms (set (keys (ns-publics 'clojure.core))))
 
 
 ;; Merge <type of thing you want> <resources, handles, state> <old val> <new val>
@@ -203,47 +216,47 @@
 
 
 
-(defrecord RefEnvironment [evaluables deps refs]
-  IRefEnvironment
-  (set-ref [this name ref]
-    (RefEnvironment. evaluables
-                     deps
-                     (assoc refs name ref)))
-  (set-form [this name evaluable dep]
-    (let [evaluables (assoc evaluables name evaluable)
-          deps (assoc deps name (set dep))]
-      (RefEnvironment. evaluables
-                       deps
-                       refs)))
+;; (defrecord RefEnvironment [evaluables deps refs]
+;;   IRefEnvironment
+;;   (set-ref [this name ref]
+;;     (RefEnvironment. evaluables
+;;                      deps
+;;                      (assoc refs name ref)))
+;;   (set-form [this name evaluable dep]
+;;     (let [evaluables (assoc evaluables name evaluable)
+;;           deps (assoc deps name (set dep))]
+;;       (RefEnvironment. evaluables
+;;                        deps
+;;                        refs)))
 
-  (shake! [this name]
-    (let [deps (get deps name)
-          ]
-      (if (not (every? #(contains? refs %) deps))
-        (do
-          (msg "couldn't find args "
-               (for [dep deps
-                     :when (not (contains? refs dep))]
-                 dep))
-          nil)
-        (let [evaluable (get evaluables name)
-              bindings (into {}
-                             (for [dep deps
-                                   :let [val (-> refs (get dep) deref)]]
-                               [dep val]))
-              ref (get refs name)
-              old-val (deref ref)
-              new-val (evaluate evaluable bindings)]
-          ;; (msg "updating " name)
-          (when (not= old-val new-val)
-            (ref-set ref new-val)
-            (doseq [[other-name other-deps] (:deps this)
-                    :when (contains? other-deps name)]
-              (shake! this other-name)))))))
+;;   (shake! [this name]
+;;     (let [deps (get deps name)
+;;           ]
+;;       (if (not (every? #(contains? refs %) deps))
+;;         (do
+;;           (msg "couldn't find args "
+;;                (for [dep deps
+;;                      :when (not (contains? refs dep))]
+;;                  dep))
+;;           nil)
+;;         (let [evaluable (get evaluables name)
+;;               bindings (into {}
+;;                              (for [dep deps
+;;                                    :let [val (-> refs (get dep) deref)]]
+;;                                [dep val]))
+;;               ref (get refs name)
+;;               old-val (deref ref)
+;;               new-val (evaluate evaluable bindings)]
+;;           ;; (msg "updating " name)
+;;           (when (not= old-val new-val)
+;;             (ref-set ref new-val)
+;;             (doseq [[other-name other-deps] (:deps this)
+;;                     :when (contains? other-deps name)]
+;;               (shake! this other-name)))))))
   
-  )
-(defn ref-environment []
-  (RefEnvironment. {} {} {}))
+;;   )
+;; (defn ref-environment []
+;;   (RefEnvironment. {} {} {}))
 
 
 ;;(defrecord Environment [refs forms deps])
@@ -981,8 +994,14 @@
 
 
 (defn QVBoxWidget []
-  (doto (QWidget.)
-    (.setLayout (QVBoxLayout.))))
+  (let [layout (QVBoxLayout.)]
+    (.setAlignment layout
+                   (com.trolltech.qt.core.Qt$AlignmentFlag/createQFlags
+                    (into-array
+                     com.trolltech.qt.core.Qt$AlignmentFlag
+                     [com.trolltech.qt.core.Qt$AlignmentFlag/AlignTop])))
+   (doto (QWidget.)
+     (.setLayout layout))))
 
 (defn QHBoxWidget []
   (doto (QWidget.)
@@ -1025,9 +1044,61 @@
       (.adjustSize node)
       (.setProperty node "size" (QSize. x y)))))
 
+(defmethod set-property :width [node kv old-val]
+  (let [[property width] (z/node kv)
+        height (.height node)]
+    (.setProperty node "size" (QSize. width height))))
+
+(defmethod set-property :height [node kv old-val]
+  (let [[property height] (z/node kv)
+        width (.width node)]
+    (.setProperty node "size" (QSize. width height))))
+
+(defmethod set-property :minumumSize [node kv old-val]
+  (let [[property [x y :as size]] (z/node kv)]
+    (.setProperty node "minumumSize" (QSize. x y))))
+
 (defmethod set-property :html [node kv old-val]
   (let [[property html] (z/node kv)]
     (.setHtml node html)))
+
+;; (defmethod set-property :bridge [node kv old-val]
+;;   (let [[property bridges] (z/node kv)
+;;         frame (-> node .page .mainFrame)]
+;;     (doseq [[name obj] bridges]
+;;       (.addToJavaScriptWindowObject frame name obj))))
+
+(defmethod set-property :bridge [node kv old-val]
+  (let [[property bridges] (z/node kv)
+        frame (-> node .page .mainFrame)]
+    (when (not= bridges old-val)
+      (.disconnect frame)
+      (ui/connect (.-javaScriptWindowObjectCleared frame)
+                 (fn []
+                   (ui/qt
+                    (doseq [[name obj] bridges]
+                      (.addToJavaScriptWindowObject frame name obj)))))
+      (doseq [[name obj] bridges]
+        (.addToJavaScriptWindowObject frame name obj)))))
+
+(declare merge-ui!)
+(defmethod set-property :viewport [node kv old-val]
+  ;; (.setWidgetResizable node true)
+  ;; (.setVerticalScrollBarPolicy node
+  ;;                                com.trolltech.qt.core.Qt$ScrollBarPolicy/ScrollBarAlwaysOn)
+  (let [[property viewport-ui] (z/node kv)
+        start-node (if old-val
+                     (.widget node))
+        viewport-node (merge-ui! start-node old-val (myzip viewport-ui))]
+    ;;imageLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    ;; (.setSizePolicy viewport-node
+    ;;                 com.trolltech.qt.gui.QSizePolicy$Policy/Ignored
+    ;;                 com.trolltech.qt.gui.QSizePolicy$Policy/Ignored)
+    ;; (.resize (.viewport node) (QSize.  600 600))
+;;    (.setProperty node "size" (QSize.  100 400))
+
+    (when (nil? old-val)
+      (.setWidget node viewport-node))))
 
 (defmethod set-property :plugins [node kv old-val]
   (let [[property val] (z/node kv)]
@@ -1226,8 +1297,7 @@
   )
 
 
-
-(def renv (atom (ref-environment)))
+(def renv (atom (env/environment)))
 (defmacro r! [name form]
   `(do
      (let [form# (quote ~form)
@@ -1251,64 +1321,308 @@
          (deref ~name)))))
 (defmacro defr [name form]
   `(do
-     (let [ref# (ref nil)]
-      (defonce ~(vary-meta name assoc :reactive? true) ref#)
-      (swap! renv set-ref (quote ~name) ref#))
+     (defonce ~(vary-meta name assoc :reactive? true) (ref nil))
+     (swap! renv set-ref (quote ~name) ~name)
      (r! ~name ~form)))
 
+
+
+#_(defr app-html
+  (list
+   [:h1 "Time Tracker 3000"]
+   [:hr]
+   [:table
+    [:tr
+     [:td
+      [:h1 "Start"]
+      [:div {:style (str "width: " col-width "px; height: 300px; overflow-y: scroll;")}
+       (for [hr [9 10 11 12 1 2 3 4 5 6 7 8]
+             minute [0 15 30 45]]
+         [:div 
+          [:a {:href "#"
+               :onclick (str "alert('hi "hr"'); return false;")} (str hr ":" (format "%02d" minute))]])]]
+     [:td
+      [:h1 "End"]
+      [:div {:style (str "width: " col-width "px; height: 300px; overflow-y: scroll;")}
+       (for [hr [9 10 11 12 1 2 3 4 5 6 7 8]
+             minute [0 15 30 45]]
+         [:div 
+          [:a {:href "#"} (str hr ":" (format "%02d" minute))]])]]
+     (let [increments [15 30 45 60]]
+       (for [category ["Break" "Extra"]]
+         [:td
+          [:h1 category]
+          [:div {:style "width: 150px; height: 300px; overflow-y: auto;"}
+           (for [minutes increments]
+             [:div 
+              [:a {:href "#"} (str "0" ":" (format "%02d" minutes))]])]])
+       )
+     ]]))
+
+#_(defr debug-html
+  [:div {:style "font-family: Monaco, Courier;"}
+   (hiccup.util/escape-html
+    (hiccup.page/html5
+     app-html))])
+
+#_(defr html
+  (hiccup.page/html5
+   [:head
+    [:title "Example"]
+    (hiccup.bootstrap.page/include-bootstrap)]
+   [:body
+    app-html
+    [:br]
+    debug-html
+    ]))
+
+#_(defr ui-wrapper
+  [:QWebView
+   {:html html}])
+
+;; (defr make-ui!
+;;   (show-ui :timetracker
+;;            ui-wrapper))
+
+;; (defr debug-html
+;;   (show-ui :debug
+;;            [:QTextEdit {:plainText html}]))
+
+;; (show-ui :commandlink2
+;;          [:QPushButton {:text "The pushbutton"
+;;                         :styleSheet "color: blue;"
+;;                         :flat true}])
+
+(defmulti compile-ui (fn [platform & ui]
+                       platform))
+(defn style-str [m]
+  (when (seq m)
+    (apply str
+           (for [[k v] m
+                 :let [v (if (contains? #{:width :height} k)
+                           (str v "px")
+                           v)]]
+             (str (name k) ":" v ";")))))
+
+(defn stylize [[type m & children :as ui]]
+  (if-let [style (:style m)]
+    (apply vector
+           type (assoc m :style (style-str style))
+           children)
+    ui))
+
+
+
+(defmethod compile-ui :web [platform form]
+  (let [[type m & children] (normalize-ui form)
+        form
+        (case type
+          :text [:span {:style m} (apply str children)]
+
+          :vlayout [:div {:style m}
+                    (for [child children]
+                      [:div child])]
+          :hlayout [:div {:style m}
+                    (for [child children]
+                      [:div {:style {:float "left"}}
+                       child])
+                    [:div {:style {:clear "both"}}]]
+          :textfield [:input {:type "text" :value (first children)
+                              :style m}]
+          :vscroll [:div  {:style (merge {:overflow "auto"}
+                                         m)}
+                    children]
+          :flat-button (let [on-click (get m :on-click)
+                             m (dissoc m :on-click)]
+                         [:a {:href "#"
+                              :onclick (str
+                                        (if on-click
+                                            (let [[bindings & puts] on-click]
+                                              (apply str
+                                                     (for [put puts]
+                                                       (str "channels.put( '" (pr-str put) "' );")))))
+                                        "; return true;")
+                              :style m}
+                          (first children)])
+          :button [:button {:style m} (first children)]
+          form)
+        [type m & children] (normalize-ui form)]
+    (stylize (apply vector type m (for [child children]
+                                    (if (vector? child)
+                                      (compile-ui platform child)
+                                      child))))
+    ))
+
+(defn stylize-desktop [[type m & children :as ui]]
+  (if-let [style (style-str (:style m))]
+    (apply vector
+           type (-> m
+                    (dissoc :style)
+                    (assoc :styleSheet style))
+           children)
+    (apply vector
+           type (dissoc m :style)
+           children)))
+
+(defmethod compile-ui :desktop [platform form]
+  (let [[type m & children] (normalize-ui form)
+        pass-through-props? #{:width :height}
+        pass-through (select-keys m pass-through-props?)
+        m (into {} (for [[k v] m
+                         :when (not (pass-through-props? k))]
+                     [k v]))
+        form
+        (case type
+          :text [:QLabel {:style m
+                          :text (apply str children)}]
+          :vscroll [:QScrollArea {:style m
+                                  :viewport (compile-ui
+                                             platform
+                                             (apply vector
+                                                    :vlayout
+                                                    children))}]
+          :vlayout [:QVBoxWidget {:style (dissoc m :height)}
+                    children]
+          :hlayout [:QHBoxWidget {:style m}
+                    children]
+          :textfield [:QLineEdit {:text (first children)
+                                  :style m}]
+          :flat-button [:QPushButton {:flat true
+                                      :style m
+                                      :text (first children)}]
+          :button [:QPushButton {:style m
+                                 :text (first children)}]
+          form)
+        [type m & children] (normalize-ui form)]
+    (stylize-desktop (apply vector type (merge m
+                                               pass-through)
+                            (for [child children]
+                              (if (vector? child)
+                                (compile-ui platform child)
+                                child))))
+    ))
+
+;; (defr application-chan (chan))
+;; (defr col-width 95)
+;; (defr selected-day "today")
+;; (defr start-time nil)
+;; (defr end-time nil)
+;; (defr test-ui
+;;   [:vlayout {}
+;;    [:text "Time Tracker 2001"]
+;;    [:hlayout {:padding "5px 0 10px 0"}
+;;     (for [day ["today" "yesterday"]]
+;;       (if (= selected-day day)
+;;         [:text day]
+;;         [:flat-button {:margin-right "20px"
+;;                        :padding "10px"
+;;                        :on-click [[]
+;;                                   ['selected-day day]]}
+;;          day]))]
+;;    [:hlayout
+;;     [:vscroll {:height 500
+;;                :width col-width}
+;;      [:vlayout
+;;       [:text (str "Start"
+;;                   "(" (let [[hr minute] start-time]
+;;                         (str hr ":" (format "%02d" minute))) ")")]
+;;       (for [hr [9 10 11 12 1 2 3 4 5 6 7 8]
+;;             minute [0 15 30 45]]
+;;         [:flat-button
+;;          {:on-click [;; bindings
+;;                      []
+;;                      ;;
+;;                      ['start-time [hr minute]]
+;;                      ;;['application-chan [:start hr minute]]
+;;                      ]}
+;;          ;; {:on-click (fn []
+;;          ;;              (msg "start" hr minute))}
+;;          (str hr ":" (format "%02d" minute))])]]
+;;     [:vscroll {:height 500
+;;                :width col-width}
+;;      [:vlayout
+;;       [:text (str "End"
+;;                   "(" (let [[hr minute] end-time]
+;;                         (str hr ":" (format "%02d" minute)))
+;;                   ")")
+;;        ]
+;;       (for [hr [9 10 11 12 1 2 3 4 5 6 7 8]
+;;             minute [0 15 30 45]]
+;;         [:flat-button
+;;          {:on-click [[]
+;;                      ['end-time [hr minute]]]}
+;;          (str hr ":" (format "%02d" minute))])]]
+;;     (let [increments [15 30 45 60]]
+;;       (for [category ["Break" "Extra"]]
+;;         [:vscroll {:width col-width
+;;                    :height 500}
+;;          [:vlayout
+;;           [:text category]
+;;           (for [minutes increments]
+;;             [:flat-button (str "0" ":" (format "%02d" minutes))])]]))]
+   
+;;    ]
+;; )
+
+(defn configure-pretty-printer
+   "Configure the pretty-printer (an instance of a JTidy Tidy class) to
+generate output the way we want -- formatted and without sending warnings.
+ Return the configured pretty-printer."
+   []
+   (doto (new Tidy)
+     (.setSmartIndent true)
+                                        ;(.setTrimEmptyElements true)
+     (.setShowWarnings false)
+     (.setQuiet true)))
+
+(defn pretty-print-html
+  "Pretty-print the html and return it as a string."
+  [html]
+  (let [swrtr ( ByteArrayOutputStream.)]
+    (.parse (configure-pretty-printer) (ByteArrayInputStream. (.getBytes (str html)))  swrtr)
+    (str swrtr)))
+
+
+
+;; (defr uic2!
+;;   (show-ui :test-compile-ui-descto23kllllllllllllllll
+;;            (compile-ui :desktop
+;;                        [:vscroll test-ui])))
+
+
+(definterface ChannelInterface
+  (^void put [^String val]))
+
+(let [ch (chan)]
+  (goe
+   (loop []
+     (when-let [val-str (<! ch)]
+       (let [[sym val] (read-string val-str)]
+         (swap! renv set-form sym (constant-evaluable val) nil)
+         (dosync
+          (shake! @renv sym)))
+       (recur))))
+  (defn channel-bridge []
+    (proxy [QObject minebot_clj.cell.ChannelInterface] []
+      (put [^String val-str]
+        (put! ch val-str)))))
+
+;; (defr uic! (show-ui :test-compile-ui45
+;;                     [:QWebView {:html
+;;                                 (hiccup.page/html5
+;;                                  (compile-ui :web test-ui)
+;;                                  [:hr]
+;;                                  [:pre {:style "font-family: Monaco, Courier;"}
+;;                                   (hiccup.util/escape-html
+;;                                    (pretty-print-html (hiccup.page/html5 (compile-ui :web test-ui))))])
+;;                                 :bridge [["channels" (channel-bridge)]]
+;; }]))
+
+
  
-;; (defn update-ui []
-;;   (try
-;;     (let [renv @renv
-;;           ns *ns*]
-;;      (show-ui :plain567
-;;               [:QVBoxWidget {}
-;;                (apply list
-;;                       (for [[name evaluable] (:evaluables renv)
-;;                             :let [var (ns-resolve ns name)
-;;                                   form (form evaluable)]
-;;                             :when var
-;;                             :let [val (-> var deref deref)
-;;                                   val-str (pr-str val)
-;;                                   make-s (fn [s n]
-;;                                            (subs s 0 (min n (count s))))]]
-;;                         [:QLabel {:text (clojure.string/join
-;;                                          " "
-;;                                          [name
-;;                                           (make-s form 20)
-;;                                           (make-s (pr-str val) 20)
-;;                                           ])}]))]
-;;               ))
-;;    (catch Exception e
-;;      (msg (with-out-str
-;;             (clojure.stacktrace/print-stack-trace e))))))
 
 
-;; (def watches (agent #{}))
-;; (add-watch renv :ui-helper
-;;            (fn [key ref old renv]
-;;              (send watches
-;;                     (fn [watches]
-                      
-;;                       (let [ref-names (set (keys (:evaluables renv)))
-;;                             removed (clojure.set/difference watches ref-names)
-;;                             added (clojure.set/difference ref-names watches)
-;;                             ns (find-ns 'minebot-clj.cell)]
-;;                         (try
-;;                          (doseq [name removed]
-;;                            (remove-watch (->> name (ns-resolve ns) deref)
-;;                                          :ui-helper))
-;;                          (doseq [name added]
-;;                            (add-watch (->> name (ns-resolve ns) deref)
-;;                                       :ui-helper
-;;                                       (fn [_ _ _ val]
-                                        
-;;                                         (update-ui)
-;;                                         )))
-;;                          (catch Exception e
-;;                            (msg (with-out-str
-;;                                   (clojure.stacktrace/print-stack-trace e)))))
-;;                         ref-names)))))
+
 
 
 

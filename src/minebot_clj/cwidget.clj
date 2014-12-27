@@ -3,8 +3,8 @@
   (:import (com.trolltech.qt.core QObject)
            (com.trolltech.qt.gui QWidget)
            (java.lang.reflect Modifier Constructor)
-           (clojure.asm ClassWriter ClassVisitor Opcodes Type)
-           (clojure.asm.commons Method GeneratorAdapter)
+           (clojure.asm ClassWriter ClassVisitor Opcodes Type )
+           (clojure.asm.commons Method GeneratorAdapter )
            (clojure.lang IPersistentMap DynamicClassLoader RT)
 
            ))
