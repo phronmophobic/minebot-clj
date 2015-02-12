@@ -11,3 +11,7 @@ pom.xml.asc
 .lein-plugins
 .lein-repl-history
 liblwjgl.jnilib
+src/minebot_clj/environment.clj
+src/minebot_clj/environment.cljs
+src/minebot_clj/evaluable.clj
+src/minebot_clj/evaluable.cljs
