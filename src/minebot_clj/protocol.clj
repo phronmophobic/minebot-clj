@@ -16,7 +16,8 @@
 #_(def protocol-url "http://wiki.vg/Protocol")
 
 (defn get-packets []
-  (let [page (cfetch protocol-url)
+  (let [;;(cfetch protocol-url)
+        page (html-snippet (slurp  (clojure.java.io/resource "index.php?title=Protocol&oldid=5374")))
         tables (select page [:table])
         packet-table? (fn [table]
                         (some #(= (:content %) '(" Packet ID ")) (select table [:th])))
