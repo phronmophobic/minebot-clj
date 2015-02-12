@@ -156,6 +156,25 @@
                      [:get m k])})
       val)))
 
+(defn zzfn [obj key fn & args]
+  (let [val (apply fn obj args)]
+    (if (instance? clojure.lang.IObj val)
+      (with-meta val
+        {:path (conj (-> obj meta :path)
+                     (into [key obj] args))})
+      val)))
+
+(defmacro defzzfn [name key fn]
+  `(let [fn# ~fn]
+     (defn ~name [obj# & args#]
+       (let[val# (apply fn# obj# args#)]
+         (if (instance? clojure.lang.IObj val#)
+           (with-meta val#
+             {:path (conj (-> obj# meta :path)
+                          (into [~key obj#] args#))})
+           val#)))))
+
+
 (defn zznth [coll index]
   (let [val (nth coll index)]
     (if (instance? clojure.lang.IObj val)
