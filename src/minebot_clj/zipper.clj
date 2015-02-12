@@ -64,11 +64,15 @@
   (into (empty old-val) new-val))
 
 (defmethod back :first [_ old-val new-val]
-  (cons new-val (rest old-val)))
+  (let [new-list (cons new-val (rest old-val))]
+    (if (list? old-val)
+      new-list
+      (into (empty old-val) new-list))))
 
 (defmethod back :rest [_ old-val new-val]
-  (cons (first old-val)
-        new-val))
+  (if (list? old-val)
+    (cons (first old-val) new-val)
+    (into (empty old-val) (cons (first old-val) (reverse new-val)))))
 
 (defn zroot [[obj path :as zm]]
   (if path

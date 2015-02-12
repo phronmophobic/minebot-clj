@@ -11,6 +11,7 @@
             [minebot-clj.cell :as cell]
             [minebot-clj.environment :as env :refer [set-ref shake! set-form]]
             [clojure.data.json :as json]
+            [clojure-python.core :as py]
             )
   (:use [minebot-clj.evaluable])
   (:import (java.net Socket ServerSocket)
@@ -25,6 +26,8 @@
                     ByteArrayInputStream
                     DataInputStream
                     DataOutputStream))
+  (:import org.python.util.PythonInterpreter)
+  (:import org.python.core.Py)
   (:import (com.trolltech.qt.gui QApplication QPushButton
                                  ;; Checkbox with a text label
                                  QCheckBox
@@ -104,7 +107,7 @@
                                   QSize
                                   QObject
                                   Qt)
-           (com.trolltech.qt.webkit QWebView )
+           (com.trolltech.qt.webkit QWebView QWebPage)
            (com.trolltech.qt.webkit.QWebView$ )
            (com.trolltech.qt.phonon VideoPlayer
                                     VideoWidget
@@ -756,12 +759,12 @@
         (>! outchan (handshake host port))
         (msg "handshook")
         (<! (timeout 1000))
-        (>! outchan (login "foo2"))
+        (>! outchan (login "treehugger1234"))
         (msg "logged in")
         (<! (timeout 1000))
         (>! outchan (chat "/gamemode 1"))
         (>! outchan (chat "hello"))
-            ;; (>! outchan (respawn))
+        #_(>! outchan (respawn))
         )
 
 
@@ -963,11 +966,12 @@
            (let [{:keys [entity-id type x y z]} (parse-packet packet)]
              (swap! entities update-in [entity-id]
                     (fn [entity]
-                      (assoc entity
-                        :x (to-fixed-number x)
-                        :y (to-fixed-number y)
-                        :z (to-fixed-number z)
-                        :type type))))
+                      (when (and x y z)
+                        (assoc entity
+                         :x (to-fixed-number x)
+                         :y (to-fixed-number y)
+                         :z (to-fixed-number z)
+                         :type type)))))
            
            :entity-teleport
            (let [{:keys [x y z entity-id]} (parse-packet packet)]
@@ -1336,6 +1340,76 @@
 
 ;; (barf)
 
+(definterface IFoo2
+  (^void speak [^String val])
+  (^void come [])
+  (^void respawn [])
+  (^void up [])
+  (^void down [])
+  (^void turn [])
+  (^void dig [])
+  (^void forward [])
+  (^void left [])
+  (^void right [])
+  (^void back []))
+
+(defrecord Foo [ch position path]
+  IFoo2
+  (^void speak [this ^String val]
+    (put! ch (chat val)))
+  (^void come [this]
+    (put! ch (try-move-to-player ch)))
+  (^void respawn [this]
+    (put! ch (respawn )))
+  (^void up [this]
+    (let [[x y z] (integerize-position @position)]
+                 (reset! path [[x
+                                (inc y)
+                                z]])))
+  (^void down [this]
+    (let [[x y z] (integerize-position @position)]
+                 (reset! path [[x
+                                (dec y)
+                                z]])))
+  (^void turn [this]
+    (swap! looking
+                    (fn [looking]
+                      (if looking
+                        (let [[yaw pitch] looking]
+                          [(+ 90 yaw) pitch])
+                        [0 0]))))
+  (^void dig [this]
+    (do
+      (when @position
+        (let [face 0
+              [px py pz] (integerize-position @position)
+              [x y z] [(inc px) (dec py) pz]
+              status 2]
+          (put! ch (player-digging 0 x y z 0))
+          ;;(put! ch (player-digging status x y z 0))
+          ))))
+  (^void forward [this]
+    (let [[x y z] (integerize-position @position)]
+      (reset! path [[(inc x)
+                     y
+                     z]])))
+  (^void left [this]
+    (let [[x y z] (integerize-position @position)]
+      (reset! path [[x
+                     y
+                     (inc z)]])))
+  (^void right [this]
+    (let [[x y z] (integerize-position @position)]
+      (reset! path [[x
+                     y
+                     (dec z)]])))
+  (^void back [this]
+    (let [[x y z] (integerize-position @position)]
+      (reset! path [[(dec x)
+                     y
+                     z]]))))
+
+
 (def renv (atom (env/environment)))
 (defmacro r! [name form]
   `(do
@@ -1369,13 +1443,12 @@
 (defn button [text handler]
   (let [key (hash handler)]
     (swap! handlers assoc key handler)
-    [:button {:onclick (str "send("key"); return false;")}
+    [:button {:onClick (str "(function(e){send("key"); e.stopPropagation(); e.preventDefault();})")}
      text]))
 
 (definterface ChannelInterface
-  (^void put [^String val]))
-
-
+  (^void put [^String val])
+  (^void setval [^String js-val]))
 
 
 (let [outer-ns *ns*]
@@ -1390,196 +1463,323 @@
                (let [val (json/read-str str-val)
                      [handler-hash & args] val
                      handler (get @handlers handler-hash)]
-                 (msg args)
+                 ;; (msg args)
                  (when handler
                    (apply handler args)))
                (catch Exception e
                  (msg (with-out-str
                         (clojure.stacktrace/print-stack-trace e)))))
-              (recur))
-            )))
+              (recur))))
+        (msg "channel stopped."))
       (proxy [QObject minebot_clj.core.ChannelInterface] []
         (put [^String str-val]
-          (put! ch str-val))))))
+          (msg "put called")
+          (put! ch str-val))
+        (setval [^String str-val]
+          (msg "set val called")
+          (future
+            (try
+              (import 'clojure.lang.RT)
+              (doseq [[name val] (partition 2 (json/read-str str-val))
+                      :let [sym-name (symbol name)]]
+                (swap! renv set-form sym-name (fn-evaluable (constantly val) nil) #{}))
+              (dosync
+               (doseq [[name val] (partition 2 (json/read-str str-val))
+                       :let [sym-name (symbol name)]]
+                 (shake! (deref renv) sym-name)))
+              (catch Exception e
+                (msg e)))))))))
 
-(defn input [text handler]
+(defn input [text handler & [react-key]]
   (let [key (hash handler)]
     (swap! handlers assoc key handler)
-    [:input {:onchange (str "send("key", event.target.value); return false;")
-             :value text
-             :type "text"
-             :size "60"}]))
+    [:input (merge
+             {:onKeyPress (str "function (e){send("key", e.key); }")
+              :value text
+              :type "text"
+              :size "60"}
+             (when react-key
+               {:key react-key}))]))
 
-(defn textarea []
-  [:textarea {:rows 30
-              :cols 100}])
+(defn textarea [text handler]
+  (let [key (hash handler)]
+    (swap! handlers assoc key handler)
+    [:textarea {:rows 30
+                :cols 100
+                :onChange (str "function(event){send("key ",event.target.value);}")
+                :value text}]))
 
+(defr pycommand "import time
+foo.speak(\"starting...\")
+")
 (defr status nil)
 (defr ch nil)
 (defr speech "bark!")
 (defr summon "Pig")
 (defr custom-command "")
 (defr html
-  [:html
-   [:head
-    [:script {:type "text/javascript"}
-     "function send(){
-try{
-window.channels.put( JSON.stringify(Array.prototype.slice.call(arguments) ));
-}catch (e){
-alert(e + '');
-}
-}
-"]
-    [:body
-     [:h1 "Foo."]
-     [:div "Host:"]
-     [:input {:type "text"
-              :value "162.243.14.228"}]
-     [:br]
-     (button "Connect"
-             (fn []
-               (try
-                (let [mine-ch (do-something :do)]
+  [:div
+   
+   [:h1 "FooFoo."]
+   [:div "Host:"]
+   [:input {:type "text"
+            :value "162.243.14.228"}]
+   [:br]
+   (button "Connect"
+           (fn []
+             (future
+              (try
+                (let [mine-ch (do-something :do
+;;                               "127.0.0.1" 25565
+                               )]
                   (r! ch mine-ch))
-                (catch Exception e
-                  (msg e)))))
-     [:button "Connect LAN"]
-     [:hr]
-     [:h3 "Commands"]
+                (catch Exception e 
+                  (msg e))))))
+   [:button "Connect LAN"]
+   [:hr]
+   [:h3 "Commands"]
 
-     (button "Speak!"
-             (fn []
-               (put! ch (chat speech))))
-     (input speech
-            (fn [s]
-              (r! speech s)))
-     [:br]
+   (button "Speak!"
+           (fn []
+             (put! ch (chat speech))))
+   (input speech
+          (fn [s]
+            (r! speech (str speech s))
+            #_(future
+              ))
+          "speech-key")
+   [:br]
 
-     (button "Come"
-             (fn []
-               (put! ch (try-move-to-player ch))))
-     [:br]
-     (button "Respawn"
-             (fn []
-               (put! ch (respawn ))))
-     [:br]
-     (button "Creative mode"
-             (fn []
-               (put! ch (chat "/gamemode 1"))))
-     [:br]
-     (button "Make it day"
-            (fn []
-              (put! ch (chat "/time set day"))))
-     [:br]
-     (button "Summon"
-             (fn []
-               (put! ch (chat (str "/summon " summon)))))
-     (input summon
-            (fn [s]
-              (r! summon s)))
-     [:br]
-
-     (button "Command"
-             (fn []
-               (put! ch (chat custom-command))))
-     (input custom-command
-            (fn [s]
-              (r! custom-command s)))
-     [:br]
-     (button "up"
-             (fn []
-               (let [[x y z] (integerize-position @position)]
+   (button "Come"
+           (fn []
+             (try-move-to-player ch)))
+   [:br]
+   (button "Respawn"
+           (fn []
+             (put! ch (respawn ))))
+   [:br]
+   (button "Creative mode"
+           (fn []
+             (put! ch (chat "/gamemode 1"))))
+   [:br]
+   (button "Make it day"
+           (fn []
+             (put! ch (chat "/time set day"))))
+   [:br]
+   (button "Summon"
+           (fn []
+             (put! ch (chat (str "/summon " summon)))))
+   (input summon
+          (fn [s]
+            (future
+             (r! summon s))))
+   [:br]
+   (button "Command"
+           (fn []
+             (put! ch (chat custom-command))))
+   (input custom-command
+          (fn [s]
+            (future
+             (r! custom-command s))))
+   [:br]
+   (button "up"
+           (fn []
+             (let [[x y z] (integerize-position @position)]
                (reset! path [[x
                               (inc y)
                               z]]))))
-     [:br]
-     (button "down"
-             (fn []
-               (let [[x y z] (integerize-position @position)]
-                 (reset! path [[x
-                                (dec y)
-                                z]]))))
-     [:br]
-     (button "turn"
-             (fn []
-               (swap! looking
+   [:br]
+   (button "down"
+           (fn []
+             (let [[x y z] (integerize-position @position)]
+               (reset! path [[x
+                              (dec y)
+                              z]]))))
+   [:br]
+   (button "turn"
+           (fn []
+             (swap! looking
                     (fn [looking]
                       (if looking
                         (let [[yaw pitch] looking]
                           [(+ 90 yaw) pitch])
                         [0 0])))))
-     [:br]
-     (button "dig"
-             (fn []
-               (do
-                 (when @position
-                   (let [face 0
-                         [px py pz] (integerize-position @position)
-                         [x y z] [(inc px) (dec py) pz]
-                         status 2]
-                     (put! ch (player-digging 0 x y z 0))
-                     (put! ch (player-digging status x y z 0)))))))
-     [:br]
-     (button "forward"
-             (fn []
-               (let [[x y z] (integerize-position @position)]
+   [:br]
+   (button "dig"
+           (fn []
+             (do
+               (when @position
+                 (let [face 0
+                       [px py pz] (integerize-position @position)
+                       [x y z] [(inc px) (dec py) pz]
+                       status 2]
+                   (put! ch (player-digging 0 x y z 0))
+                   ;;(put! ch (player-digging status x y z 0))
+                   )))))
+   [:br]
+   (button "forward"
+           (fn []
+             (let [[x y z] (integerize-position @position)]
                (reset! path [[(inc x)
                               y
                               z]]))))
-     [:br]
-     (button "left"
-             (fn []
-               (let [[x y z] (integerize-position @position)]
-                 (reset! path [[x
-                                y
-                                (inc z)]]))
-               ))
-     [:br]
-     (button "right"
-             (fn []
-               (let [[x y z] (integerize-position @position)]
+   [:br]
+   (button "left"
+           (fn []
+             (let [[x y z] (integerize-position @position)]
+               (reset! path [[x
+                              y
+                              (inc z)]]))
+             ))
+   [:br]
+   (button "right"
+           (fn []
+             (let [[x y z] (integerize-position @position)]
                (reset! path [[x
                               y
                               (dec z)]]))))
-     [:br]
-     (button "back"
-             (fn []
+   [:br]
+   (button "back"
+           (fn []
+             (let [[x y z] (integerize-position @position)]
                (let [[x y z] (integerize-position @position)]
-                 (let [[x y z] (integerize-position @position)]
-                   (reset! path [[(dec x)
-                                  y
-                                  z]])))))
+                 (reset! path [[(dec x)
+                                y
+                                z]])))))
 
-     [:br]
+   [:br]
+   #_(textarea pycommand
+             (fn [s]
+               (future
+                (r! pycommand s))))
 
-     (textarea)
-     [:br]
-     (button "Execute python"
-             (fn []))
-     
-     
-     
-]
-    ]])
+   [:br]
+   (button "Execute python"
+           (fn []
+             (let [interp (PythonInterpreter.)
+                   out (new java.io.StringWriter)
+                   foo (Foo. ch position path)]
+               ;; (.setOut interp out)
+               (.set interp "foo" (. Py (java2py foo)))
+               (.exec interp pycommand))))
+   
+   
+   
+   ]
+  )
 
 
+(defn normalize-hiccup [elem]
+  (if (vector? elem)
+    (let [[tag tag-attrs content] (hiccup.compiler/normalize-element elem)
+          tag-attrs (into {}
+                          (remove (fn [[k v]]
+                                    (and (#{:id :class} k)
+                                         (nil? v)))
+                                  tag-attrs))]
+      [tag tag-attrs (map normalize-hiccup content)])
+    elem))
 
 
+(defonce web-uis (atom {}))
+(defn show-web-ui [key ui]
+  (let [outer-ns *ns*
+        react-resource (clojure.java.io/resource "react-0.12.2.js")
+        webui-resource (clojure.java.io/resource "webui.js")
+        rebind-shim-resource (clojure.java.io/resource "es5-shim.min.js")
+        work (fn []
+               (binding [*ns* outer-ns]
+                 (try
+                   (swap! web-uis
+                          (fn [uis]
+                            (if-let [node (get uis key)]
+                              uis
+                              (assoc uis
+                                key
+                                (let [webview (QWebView.)
+                                      page (proxy [QWebPage] []
+                                             (javaScriptConsoleMessage [message line-number source-id]
+                                               ;; (msg source-id ":" line-number  message)
+                                               ))
+                                      frame (-> page .mainFrame)
+                                      html (hiccup.page/html5
+                                            
+                                            [:body
+                                             [:div#root]
+                                             [:pre#error]
+                                             [:script {:type "text/javascript"}
+                                              (str
+                                               (slurp rebind-shim-resource)
+                                               "\n"
+                                               (slurp react-resource)
+                                               "\n"
+                                               (slurp webui-resource))]
+                                             ])
+                                      bridge (channel-bridge)]
+                                  (doto (.settings page)
+                                    (.setAttribute com.trolltech.qt.webkit.QWebSettings$WebAttribute/LocalContentCanAccessFileUrls
+                                                   true)
+                                    (.setAttribute com.trolltech.qt.webkit.QWebSettings$WebAttribute/LocalContentCanAccessRemoteUrls
+                                                   true)
+                                    (.setAttribute com.trolltech.qt.webkit.QWebSettings$WebAttribute/DeveloperExtrasEnabled
+                                                   true)
+                                    (.setAttribute com.trolltech.qt.webkit.QWebSettings$WebAttribute/JavascriptEnabled
+                                                   true))
 
-(defr minebot-ui nil)
+
+                                  (.setPage webview page)
+                                  (.setHtml frame html)
+                                  (ui/connect (.-javaScriptWindowObjectCleared frame)
+                                              (fn []
+                                                (ui/qt
+                                                 (.addToJavaScriptWindowObject frame "channels" bridge))))
+                                  (.addToJavaScriptWindowObject frame "channels" bridge)
+                                  (.evaluateJavaScript frame
+                                                       (str (slurp react-resource) ";1;"))
+                                  (.evaluateJavaScript frame
+                                                       (str (slurp webui-resource) ";1;"))
+
+                                  webview)))))
+                   (let [node (get @web-uis key)
+                         frame (-> node .page .mainFrame)
+                         html (normalize-hiccup ui)]
+                     (.evaluateJavaScript frame
+                                          (str (slurp webui-resource) ";1;"))
+                     (.evaluateJavaScript frame
+                                          (str "updatehtml(" (json/write-str html)
+                                               "); 1;"))
+                     (doto node
+                       (.show)))
+                   (catch Exception e
+                     (msg e)
+                     (msg (with-out-str (clojure.stacktrace/print-stack-trace e)))))))]
+    (if (nil? (QCoreApplication/instance))
+      (.execute
+       (.getNonBlockingMainQueueExecutor (com.apple.concurrent.Dispatch/getInstance))
+       (fn []
+         (try
+           (ui/init)
+           (work)
+           (.exec (QCoreApplication/instance))
+           (catch Exception e
+             (msg e)))))
+      (QApplication/invokeLater work)))
+  )
+
+#_(defr minebot-ui
+  (show-web-ui :minebot11
+                 html))
+#_(defr minebot-ui nil)
+
+
 
 (let [outer-ns *ns*]
   (defn -main [& args]
     (try
-     (binding [*ns* outer-ns]
-       (r! minebot-ui
-           (cell/show-ui :minebot
-                         [:QWebView
-                          {:html
-                           (hiccup.page/html5
-                            html)
-                           :bridge [["channels" (channel-bridge)]]}])))
+      (binding [*ns* outer-ns]
+        (r! minebot-ui
+            (show-web-ui :minebot2
+               html)))
      
      (catch Exception e
        (msg (with-out-str

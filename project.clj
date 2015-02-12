@@ -24,6 +24,12 @@
                  [jtidy "4aug2000r7-dev"]
                  [org.clojure/clojurescript "0.0-2371"]
 
+                 [org.python/jython-standalone "2.7-b3"]
+                 [clojure-python "0.4.1" :exclusions [org.clojure/clojure
+                                                      org.python/jython-standalone]]
+
+                 [phronmophobic/penumbra "0.6.6-SNAPSHOT"]
+
                  ]
   :profiles {:dev {:plugins [[com.keminglabs/cljx "0.4.0"]]}}
   :cljx {:builds [{:source-paths ["src"]

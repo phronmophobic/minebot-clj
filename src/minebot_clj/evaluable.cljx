@@ -49,6 +49,7 @@
       ;; (minebot-clj.cell/msg "evaling " ns eval-form)
       (binding [*ns* ns
                 *locals* env]
+        ;; (import 'clojure.lang.RT)
         (eval
          eval-form))))
 
