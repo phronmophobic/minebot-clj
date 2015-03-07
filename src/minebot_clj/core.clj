@@ -1510,164 +1510,166 @@
                 :onChange (str "function(event){send("key ",event.target.value);}")
                 :value text}]))
 
-(defr pycommand "import time
+(comment
+
+  (defr pycommand "import time
 foo.speak(\"starting...\")
 ")
-(defr status nil)
-(defr ch nil)
-(defr speech "bark!")
-(defr summon "Pig")
-(defr custom-command "")
-(defr html
-  [:div
+ (defr status nil)
+ (defr ch nil)
+ (defr speech "bark!")
+ (defr summon "Pig")
+ (defr custom-command "")
+ (defr html
+   [:div
    
-   [:h1 "FooFoo."]
-   [:div "Host:"]
-   [:input {:type "text"
-            :value "162.243.14.228"}]
-   [:br]
-   (button "Connect"
-           (fn []
+    [:h1 "FooFoo."]
+    [:div "Host:"]
+    [:input {:type "text"
+             :value "162.243.14.228"}]
+    [:br]
+    (button "Connect"
+            (fn []
+              (future
+                (try
+                  (let [mine-ch (do-something :do
+                                              ;;                               "127.0.0.1" 25565
+                                              )]
+                    (r! ch mine-ch))
+                  (catch Exception e 
+                    (msg e))))))
+    [:button "Connect LAN"]
+    [:hr]
+    [:h3 "Commands"]
+
+    (button "Speak!"
+            (fn []
+              (put! ch (chat speech))))
+    (input speech
+           (fn [s]
+             (r! speech (str speech s))
+             #_(future
+                 ))
+           "speech-key")
+    [:br]
+
+    (button "Come"
+            (fn []
+              (try-move-to-player ch)))
+    [:br]
+    (button "Respawn"
+            (fn []
+              (put! ch (respawn ))))
+    [:br]
+    (button "Creative mode"
+            (fn []
+              (put! ch (chat "/gamemode 1"))))
+    [:br]
+    (button "Make it day"
+            (fn []
+              (put! ch (chat "/time set day"))))
+    [:br]
+    (button "Summon"
+            (fn []
+              (put! ch (chat (str "/summon " summon)))))
+    (input summon
+           (fn [s]
              (future
-              (try
-                (let [mine-ch (do-something :do
-;;                               "127.0.0.1" 25565
-                               )]
-                  (r! ch mine-ch))
-                (catch Exception e 
-                  (msg e))))))
-   [:button "Connect LAN"]
-   [:hr]
-   [:h3 "Commands"]
-
-   (button "Speak!"
-           (fn []
-             (put! ch (chat speech))))
-   (input speech
-          (fn [s]
-            (r! speech (str speech s))
-            #_(future
+               (r! summon s))))
+    [:br]
+    (button "Command"
+            (fn []
+              (put! ch (chat custom-command))))
+    (input custom-command
+           (fn [s]
+             (future
+               (r! custom-command s))))
+    [:br]
+    (button "up"
+            (fn []
+              (let [[x y z] (integerize-position @position)]
+                (reset! path [[x
+                               (inc y)
+                               z]]))))
+    [:br]
+    (button "down"
+            (fn []
+              (let [[x y z] (integerize-position @position)]
+                (reset! path [[x
+                               (dec y)
+                               z]]))))
+    [:br]
+    (button "turn"
+            (fn []
+              (swap! looking
+                     (fn [looking]
+                       (if looking
+                         (let [[yaw pitch] looking]
+                           [(+ 90 yaw) pitch])
+                         [0 0])))))
+    [:br]
+    (button "dig"
+            (fn []
+              (do
+                (when @position
+                  (let [face 0
+                        [px py pz] (integerize-position @position)
+                        [x y z] [(inc px) (dec py) pz]
+                        status 2]
+                    (put! ch (player-digging 0 x y z 0))
+                    ;;(put! ch (player-digging status x y z 0))
+                    )))))
+    [:br]
+    (button "forward"
+            (fn []
+              (let [[x y z] (integerize-position @position)]
+                (reset! path [[(inc x)
+                               y
+                               z]]))))
+    [:br]
+    (button "left"
+            (fn []
+              (let [[x y z] (integerize-position @position)]
+                (reset! path [[x
+                               y
+                               (inc z)]]))
               ))
-          "speech-key")
-   [:br]
+    [:br]
+    (button "right"
+            (fn []
+              (let [[x y z] (integerize-position @position)]
+                (reset! path [[x
+                               y
+                               (dec z)]]))))
+    [:br]
+    (button "back"
+            (fn []
+              (let [[x y z] (integerize-position @position)]
+                (let [[x y z] (integerize-position @position)]
+                  (reset! path [[(dec x)
+                                 y
+                                 z]])))))
 
-   (button "Come"
-           (fn []
-             (try-move-to-player ch)))
-   [:br]
-   (button "Respawn"
-           (fn []
-             (put! ch (respawn ))))
-   [:br]
-   (button "Creative mode"
-           (fn []
-             (put! ch (chat "/gamemode 1"))))
-   [:br]
-   (button "Make it day"
-           (fn []
-             (put! ch (chat "/time set day"))))
-   [:br]
-   (button "Summon"
-           (fn []
-             (put! ch (chat (str "/summon " summon)))))
-   (input summon
-          (fn [s]
-            (future
-             (r! summon s))))
-   [:br]
-   (button "Command"
-           (fn []
-             (put! ch (chat custom-command))))
-   (input custom-command
-          (fn [s]
-            (future
-             (r! custom-command s))))
-   [:br]
-   (button "up"
-           (fn []
-             (let [[x y z] (integerize-position @position)]
-               (reset! path [[x
-                              (inc y)
-                              z]]))))
-   [:br]
-   (button "down"
-           (fn []
-             (let [[x y z] (integerize-position @position)]
-               (reset! path [[x
-                              (dec y)
-                              z]]))))
-   [:br]
-   (button "turn"
-           (fn []
-             (swap! looking
-                    (fn [looking]
-                      (if looking
-                        (let [[yaw pitch] looking]
-                          [(+ 90 yaw) pitch])
-                        [0 0])))))
-   [:br]
-   (button "dig"
-           (fn []
-             (do
-               (when @position
-                 (let [face 0
-                       [px py pz] (integerize-position @position)
-                       [x y z] [(inc px) (dec py) pz]
-                       status 2]
-                   (put! ch (player-digging 0 x y z 0))
-                   ;;(put! ch (player-digging status x y z 0))
-                   )))))
-   [:br]
-   (button "forward"
-           (fn []
-             (let [[x y z] (integerize-position @position)]
-               (reset! path [[(inc x)
-                              y
-                              z]]))))
-   [:br]
-   (button "left"
-           (fn []
-             (let [[x y z] (integerize-position @position)]
-               (reset! path [[x
-                              y
-                              (inc z)]]))
-             ))
-   [:br]
-   (button "right"
-           (fn []
-             (let [[x y z] (integerize-position @position)]
-               (reset! path [[x
-                              y
-                              (dec z)]]))))
-   [:br]
-   (button "back"
-           (fn []
-             (let [[x y z] (integerize-position @position)]
-               (let [[x y z] (integerize-position @position)]
-                 (reset! path [[(dec x)
-                                y
-                                z]])))))
+    [:br]
+    #_(textarea pycommand
+                (fn [s]
+                  (future
+                    (r! pycommand s))))
 
-   [:br]
-   #_(textarea pycommand
-             (fn [s]
-               (future
-                (r! pycommand s))))
-
-   [:br]
-   (button "Execute python"
-           (fn []
-             (let [interp (PythonInterpreter.)
-                   out (new java.io.StringWriter)
-                   foo (Foo. ch position path)]
-               ;; (.setOut interp out)
-               (.set interp "foo" (. Py (java2py foo)))
-               (.exec interp pycommand))))
+    [:br]
+    (button "Execute python"
+            (fn []
+              (let [interp (PythonInterpreter.)
+                    out (new java.io.StringWriter)
+                    foo (Foo. ch position path)]
+                ;; (.setOut interp out)
+                (.set interp "foo" (. Py (java2py foo)))
+                (.exec interp pycommand))))
    
    
    
-   ]
-  )
+    ]
+   ))
 
 
 (defn normalize-hiccup [elem]
