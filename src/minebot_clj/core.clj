@@ -736,7 +736,8 @@
   ([] (let [[host port] (protocol/discover-minecraft-server)]
         (do-something host port)))
   ([host]
-   (let [host (get {:do "162.243.14.228"} host)]
+   (let [host (get {:do "162.243.14.228"
+                    :local "127.0.0.1"} host host)]
      (do-something host 25565)))
   ([host port]
      (let [inchan (chan 100)
