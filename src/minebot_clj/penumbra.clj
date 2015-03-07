@@ -487,6 +487,9 @@
   "Called when mouse moves with a button pressed. [dx dy] contains relative motion since last time :mouse-drag was called, and [x y] contains absolute position of the mouse. button will be equal to one of :left, :right, :center, :mouse-4, or :mouse-5. If the mouse is moving when two or more buttons are pressed, :mouse-drag will be called once for each button."
   state)
 
+(defn mouse-wheel [dwheel state]
+  state)
+
 
 (defn box-contains? [[x y width height] [px py]]
   (and (<= px (+ x width))
@@ -586,6 +589,7 @@
                          :mouse-down #'mouse-down
                          :mouse-up #'mouse-up
                          :mouse-click #'mouse-click
+                         :mouse-wheel #'mouse-wheel
                          :key-press #'key-press
                          :key-release #'key-release
                          :key-type #'key-type}
