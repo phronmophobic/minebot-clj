@@ -107,6 +107,14 @@
      catch (let [[catch-sym catch-class new-binding & body] form]
              (remove #{new-binding} (unbound-syms body)))
 
+     reify*
+     (let [[_ interfaces & methods] form]
+       (apply
+        concat
+        (for [[method-name bindings & body] methods]
+          (remove (set bindings)
+                  (unbound-syms body)))))
+
      (mapcat unbound-syms form))
 
    (symbol? form) (list form)
