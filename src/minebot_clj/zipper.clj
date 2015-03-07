@@ -13,8 +13,14 @@
 (defmulti back (fn [type & args]
                  type))
 
+(defmulti forward (fn [type & args]
+                    type))
+
 (defmethod back :get [_ old-val new-val k]
   (assoc old-val k new-val))
+
+(defmethod forward :get [_ m k]
+  (get m k))
 
 (defmethod back :nth [_ old-val new-val i]
   (if (associative? old-val)
@@ -22,6 +28,9 @@
     (concat (take i old-val)
             [new-val]
             (drop (inc i) old-val))))
+
+(defmethod back :nth [_ coll i]
+  (nth coll i))
 
 (defmulti znext (fn [[_ [[type & _] & _]]]
                     type))
@@ -63,16 +72,25 @@
 (defmethod back :seq [_ old-val new-val]
   (into (empty old-val) new-val))
 
+(defmethod forward :seq [_ coll]
+  (seq coll))
+
 (defmethod back :first [_ old-val new-val]
   (let [new-list (cons new-val (rest old-val))]
     (if (list? old-val)
       new-list
       (into (empty old-val) new-list))))
 
+(defmethod forward :first [_ coll]
+  (first coll))
+
 (defmethod back :rest [_ old-val new-val]
   (if (list? old-val)
     (cons (first old-val) new-val)
     (into (empty old-val) (cons (first old-val) (reverse new-val)))))
+
+(defmethod forward :rest [_ coll]
+  (rest coll))
 
 (defn zroot [[obj path :as zm]]
   (if path
@@ -147,6 +165,22 @@
                        all-deps)))]
     all-deps))
 
+(defn zzpath [obj]
+  (-> obj meta :path))
+
+(defn zzapply [obj path]
+  (when obj
+    (reduce
+     (fn [obj [type _ & args :as sub-path]]
+       (when obj
+         (vary-meta (apply forward type obj args)
+                    assoc :path (conj (-> obj meta :path) (apply vector type obj args)))))
+     (vary-meta obj dissoc :path)
+     (reverse path))))
+
+
+(defn zzrebase [old new]
+  (zzapply new (zzpath old)))
 
 (defn zzget [m k]
   (let [val (get m k)]
@@ -156,7 +190,11 @@
                      [:get m k])})
       val)))
 
-(defn zzfn [obj key fn & args]
+#_(defmethod back :fn [_ old-val new-val back-fn & args]
+  (apply back-fn old-val new-val args)
+)
+
+#_(defn zzfn [obj back-fn fn & args]
   (let [val (apply fn obj args)]
     (if (instance? clojure.lang.IObj val)
       (with-meta val
@@ -172,7 +210,9 @@
            (with-meta val#
              {:path (conj (-> obj# meta :path)
                           (into [~key obj#] args#))})
-           val#)))))
+           val#)))
+     (defmethod forward ~key [_# obj# & args#]
+       (apply fn# obj# args#))))
 
 
 (defn zznth [coll index]
@@ -211,10 +251,15 @@
   (with-meta (apply f obj args)
     (meta obj)))
 
+(defn zzroot? [obj]
+  (boolean (-> obj meta :path)))
+
 (defn zzroot [obj]
-  (if (-> obj meta :path)
+  (if (zzroot? obj)
     (recur (zzup obj))
     obj))
+
+
 
 (defmulti zzremove (fn [obj]
                      (let [[[type & _] & _] (-> obj meta :path)]
