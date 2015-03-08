@@ -134,6 +134,12 @@
          evaluable (constant-evaluable val)]
      (set-form-and-deps name evaluable {}))))
 
+(defn update-value [name f]
+  (dosync
+   (let [old-val (get-renv-value name)
+         new-val (f old-val)
+         evaluable (constant-evaluable new-val)]
+     (set-value name evaluable nil))))
 
 (defmacro r! [name form]
   `(set-form-and-deps (quote ~name)
@@ -160,6 +166,9 @@
                                                 [~@(for [[k _] &env]
                                                      [(list 'quote k)
                                                       k])])))
+
+(defmacro ru! [name fn]
+  `(update-value (quote ~name) ~fn))
 
 
 (defmacro defr [name form]
