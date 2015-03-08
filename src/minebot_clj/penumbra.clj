@@ -333,6 +333,18 @@
 (defn move [x y drawable]
   (Move. (make-cid "move") x y drawable))
 
+(defn spacer [x y]
+  (let [-cid (make-cid "spacer")]
+    (reify
+      IComponent
+      (cid [this]
+        -cid)
+      IDraw
+      (draw [this state])
+      IBounds
+      (-bounds [this]
+        [x y]))))
+
 (defcomponent Path [points]
   IBounds
   (-bounds [this]
@@ -703,6 +715,22 @@
             state))))
 (defn text-input [initial-text & [on-key]]
   (TextInput. (make-cid "textinput") initial-text on-key))
+
+(defn key-handler [sym]
+  (fn [key]
+    (let [sym-ref (deref (ns-resolve *ns* sym))
+          old-text (deref sym-ref)
+          new-text
+          (cond
+           (= :back key)
+           (subs old-text 0 (max 0 (dec (.length old-text))))
+           
+           (string? key)
+           (str old-text key))]
+      (when new-text
+        (swap! renv set-form sym (constant-evaluable new-text) #{})
+        (dosync
+         (shake! (deref renv) sym))))))
 
 (defn vertical-layout [elem & more]
   (if more
