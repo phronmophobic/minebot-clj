@@ -162,18 +162,8 @@
                                                       k])])))
 
 
-
 (defmacro defr [name form]
   `(do
      (defonce ~(vary-meta name assoc :reactive? true) (r! ~name ~form))
      ~name))
-
-(r! a 9)
-(r! b 8)
-(r! d (+ a b))
-;; (rv! e (+ a b))
-
-
-
-
 
