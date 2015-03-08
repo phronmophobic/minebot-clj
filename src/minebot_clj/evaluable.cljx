@@ -61,8 +61,6 @@
                        deps)]
 
       deps)))
-#+clj
-(defn clojure-evaluable [ns form locals])
 
 
 (defrecord FnEvaluable [fn arg-deps]
