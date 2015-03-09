@@ -134,6 +134,15 @@
          evaluable (constant-evaluable val)]
      (set-form-and-deps name evaluable {}))))
 
+(defn get-renv-ref [name]
+  (let [renv (get @all-envs *ns*)]
+    (-> @renv
+        :refs
+        (get name))))
+
+(defn get-renv-value [name]
+  (deref (get-renv-ref name)))
+
 (defn update-value [name f]
   (dosync
    (let [old-val (get-renv-value name)
@@ -148,13 +157,6 @@
                                               [~@(for [[k _] &env]
                                                    [(list 'quote k)
                                                     k])]))))
-
-(defn get-renv-value [name]
-  (let [renv (get @all-envs *ns*)]
-    (-> @renv
-        :refs
-        (get name)
-        deref)))
 
 (defmacro r? [name]
   `(get-renv-value (quote ~name)))
@@ -173,6 +175,6 @@
 
 (defmacro defr [name form]
   `(do
-     (defonce ~(vary-meta name assoc :reactive? true) (r! ~name ~form))
-     ~name))
+     (r! ~name ~form)
+     (def ~(vary-meta name assoc :reactive? true) (get-renv-ref (quote ~name)))))
 
