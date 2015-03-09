@@ -29,7 +29,12 @@
   (form [this]
     (pr-str val))
   (-evaluate [this env]
-    val))
+    val)
+
+  Dependable
+  (dependencies [this]
+    #{}))
+
 (defn constant-evaluable [val]
   (ConstantEvaluable. val))
 
