@@ -6,7 +6,7 @@
                                         ] :as async]
             [clojure.stacktrace]
             [minebot-clj.ui :as ui]
-            [minebot-clj.environment :as env :refer [set-ref shake! set-form]])
+            [minebot-clj.environment :as env :refer [defr r! rv! ru! r?]])
   (:require [minebot-clj.zipper :as z :refer [zzedit zzup zzunzip zzseq zzget zzfirst zzrest defzzfn zzroot zznth zzroot? zzpath zzapply]]
             [minebot-clj.core :as bot])
 
@@ -32,45 +32,14 @@
            [org.newdawn.slick.opengl TextureImpl ])
   (:gen-class))
 
-(def renv (atom (env/environment)))
-(defmacro r! [name form]
-  `(do
-     (let [form# (quote ~form)
-           evaluable# (if (evaluable? form#)
-                        form#
-                        (->ClojureEvaluable *ns* form#
-                                            (into {}
-                                                  [~@(for [[k _] &env]
-                                                       [(list 'quote k)
-                                                        k])])))
-           deps# (-> (dependencies evaluable#)
-                     (->> (remove (fn [name#]
-                                    (when-let [var# (ns-resolve *ns* name#)]
-                                      (-> var# meta :reactive? not)))))
-                     set 
-                     (disj ~name))]
-       (swap! renv set-form (quote ~name) evaluable# deps#)
-       (dosync
-        (shake! (deref renv) (quote ~name)))
-       (when (instance? clojure.lang.IDeref ~name)
-         (deref ~name)))))
-(defmacro defr [name form]
-  `(do
-     (defonce ~(vary-meta name assoc :reactive? true) (ref nil))
-     (swap! renv set-ref (quote ~name) ~name)
-     (r! ~name ~form)))
-
 (defn update-state [state]
   state)
 
-(declare components)
 (defn init [state]
   (render-mode :wireframe)
   ;; (app/periodic-update! 30  #'update-state )
   (app/vsync! true)
-  (assoc state :mx 0 :my 0
-         :root components
-         :focus nil))
+  state)
 
 (defn reshape [[x y width height] state]
 ;;  (frustum-view 60.0 (/ (double width) height) 1.0 100.0)
@@ -80,15 +49,12 @@
   state)
 
 
-
-
 (defmacro defcomponent [name [& fields] & opts+specs]
   `(defrecord ~name [cid# ~@fields]
      IComponent
      (~'cid [this#]
        cid#)
      ~@opts+specs))
-
 
 (defmacro event-interfaces [& types]
   (let [decls
@@ -118,6 +84,7 @@
  :mouse-down
  :mouse-up
  :mouse-click
+ :mouse-wheel
  :key-press)
 
 (defprotocol IFocus)
@@ -216,15 +183,22 @@
 (def ^:dynamic *font* nil)
 (def ^:dynamic *root* nil)
 (def ^:dynamic *focus* nil)
+(def ^:dynamic *event-handlers* nil)
 
 (def find-focus (memoize zzapply))
+
 (defmacro with-event-bindings [& body]
   `(let [root# (-> ~'state :root deref)
+         event-handlers# (-> ~'state :event-handlers deref)
+         font-cache# (-> ~'state :font-cache)
          focus-path# (-> ~'state :focus)
          focus# (when focus-path#
-                  (cid (find-focus root# focus-path#)))]
+                  (cid (find-focus root# focus-path#)))
+         ]
      (binding [*root* root#
-               *focus* focus#]
+               *focus* focus#
+               *event-handlers* event-handlers#
+               *font-cache* font-cache#]
        ~@body)))
 
 (defmacro with-font [f & body]
@@ -248,7 +222,7 @@
          ~@body))))
 
 (defn font [name & modifiers]
-  (if-let [font (@*font-cache* (list* name modifiers))]
+  (if-let [font (get @*font-cache* (list* name modifiers))]
     font
     (with-slate
       (let [hash (-> (apply hash-map modifiers)
@@ -405,7 +379,7 @@
   (polygon color [0 0] [0 height]  [width height] [width 0]  [0 0]))
 
 (def ^:dynamic *origin* [0 0 0])
-(defr components [])
+
 (gl-import- glVertex3d gl-vertex)
 (gl-import- glNormal3d gl-normal)
 (gl-import- glTexCoord1d gl-tex-1)
@@ -489,7 +463,7 @@
              (TextureImpl/bindNone)
              (draw *root* state)))))))
 
-  )
+  state)
 
 
 (defn close [state]
@@ -510,31 +484,22 @@
        (>= py y)))
 
 
-(declare event-handlers)
 (defn mouse-move [[dx dy] [mx my] state]
   "Called the same as :mouse-drag, but when no button is pressed."
   (with-event-bindings
-    (doseq [handler (-> @event-handlers :mouse-move)]
-      (-mouse-move handler [mx my])))
+      (doseq [handler (-> *event-handlers* :mouse-move)]
+        (-mouse-move handler [mx my])))
 
   (assoc state
     :mx mx
     :my my))
 
 
-(declare mouse-handlers)
 (defn mouse-down [[x y] button state]
   "Called whenever a button is pressed."
   (with-event-bindings
-    (doseq [handler (-> @event-handlers :mouse-down)]
-      (-mouse-down handler [x y])))
-  #_(doseq [[htype [cx cy cw ch] handler elem] @mouse-handlers
-          :when (= htype :on-click)]
-    (when (and (>= x cx)
-               (>= y cy)
-               (<= x (+ cx cw))
-               (<= y (+ cy ch)))
-      (handler elem)))
+      (doseq [handler (-> *event-handlers* :mouse-down)]
+        (-mouse-down handler [x y])))
 
   state)
 
@@ -542,20 +507,17 @@
 (declare find-elems)
 (defn mouse-up [[x y] button state]
   "Called whenever a button is released."
-  
+
   (with-event-bindings
-    (doseq [handler (-> @event-handlers :mouse-up)]
-      (-mouse-up handler [x y]))
-    (let [focus (zzpath (first (filter #(satisfies? IFocus %)
-                                       (find-elems [x y]))))]
-      (-> state
-          (assoc :mousedown false
-                 :cx x
-                 :cy y
-                 :focus focus
-                 ))))
-  
-  )
+      (doseq [handler (-> *event-handlers* :mouse-up)]
+        (-mouse-up handler [x y]))
+      (let [focus-elem (first (filter #(satisfies? IFocus %)
+                                      (find-elems [x y])))
+            focus (when focus-elem
+                    (or (zzpath focus-elem)
+                        []))]
+        (-> state
+            (assoc :focus focus)))))
 
 
 (defn mouse-click [[x y] button state]
@@ -567,10 +529,8 @@
 (defn key-press [key state]
   "Called whenever a key is pressed. If the key is something that would normally show up in a text entry field, key is a case-sensitive string. Examples include “a”, “&”, and " ". If it is not, key is a keyword. Examples include :left, :control, and :escape"
   (with-event-bindings
-    (doseq [handler (-> @event-handlers :key-press)]
+    (doseq [handler (-> *event-handlers* :key-press)]
       (-key-press handler key)))
-
-
   state)
 
 
@@ -584,36 +544,50 @@
   state)
 
 (defonce current-app (atom nil))
-(defn start []
-  (go
-   (when @current-app
-     (controller/stop! @current-app)
-     (reset! current-app nil))
-   (reset! *font-cache* {})
-   (<! (timeout 100))
-   (reset! current-app (app/create
-                        {:display #'display
-                         :init #'init
-                         :close #'close
-                         :reshape #'reshape
-                         :mouse-drag #'mouse-drag
-                         :mouse-move #'mouse-move
-                         :mouse-down #'mouse-down
-                         :mouse-up #'mouse-up
-                         :mouse-click #'mouse-click
-                         :mouse-wheel #'mouse-wheel
-                         :key-press #'key-press
-                         :key-release #'key-release
-                         :key-type #'key-type}
-                        {:rot 0 :fluid true
-                         :width 650
-                         :height 878
-                         :top 0
-                         :jiggle-y 0
-                         :jiggle-x 0}))
-   (app/start-single-thread @current-app loop/basic-loop))
-  
-  )
+(defn stop []
+  (when-let [app @current-app]
+    (controller/stop! app)
+    (reset! current-app nil))
+  nil)
+
+(defn start [root event-handlers]
+  (stop)
+  (Thread/sleep 1000)
+  (let [callbacks {:display #'display
+                   :init #'init
+                   :close #'close
+                   :reshape #'reshape
+                   :mouse-drag #'mouse-drag
+                   :mouse-move #'mouse-move
+                   :mouse-down #'mouse-down
+                   :mouse-up #'mouse-up
+                   :mouse-click #'mouse-click
+                   :mouse-wheel #'mouse-wheel
+                   :key-press #'key-press
+                   :key-release #'key-release
+                   :key-type #'key-type}
+        state {:width 650
+               :height 878
+               :top 0
+               :mx 0
+               :my 0
+               :font-cache (atom {})
+               :focus nil
+               :root root
+               :event-handlers event-handlers}
+        ;; current-app (app/start callbacks state)
+        ]
+    (reset! current-app (app/create callbacks state))
+    (let [out *out*]
+      (go
+        (binding [*out* out]
+          (try
+            (app/start-single-thread @current-app loop/basic-loop)
+            (catch Exception e
+              (clojure.stacktrace/print-stack-trace e))))))
+    nil))
+
+
 
 
 (defn button-draw [this state]
@@ -718,19 +692,19 @@
 
 (defn key-handler [sym]
   (fn [key]
-    (let [sym-ref (deref (ns-resolve *ns* sym))
-          old-text (deref sym-ref)
-          new-text
-          (cond
-           (= :back key)
-           (subs old-text 0 (max 0 (dec (.length old-text))))
-           
-           (string? key)
-           (str old-text key))]
-      (when new-text
-        (swap! renv set-form sym (constant-evaluable new-text) #{})
-        (dosync
-         (shake! (deref renv) sym))))))
+    (env/update-value
+     sym
+     (fn [old-text]
+       (let [new-text
+             (cond
+              (= :back key)
+              (subs old-text 0 (max 0 (dec (.length old-text))))
+              
+              (string? key)
+              (str old-text key))]
+         (if new-text
+           new-text
+           old-text))))))
 
 (defn vertical-layout [elem & more]
   (if more
@@ -758,8 +732,8 @@
 (defr rwidth 50)
 (defr rheight 10)
 
-(r! components [(vertical-layout
-                 (label "Minecraft Foo" :font-size 35)
+#_(r! components [(vertical-layout
+                   (label "Minecraft Foo" :font-size 35)
                  (move 0 30
                        (vertical-layout
                         (horizontal-layout
@@ -942,24 +916,6 @@
       (- y oy)])))
 
 
-;; returns box to handler
-;; (defn find-mouse-handlers
-;;   ([comp]
-;;    (find-mouse-handlers comp [0 0]))
-;;   ([comp & [[sx sy]]]
-;;    (let [[ox oy] (origin comp)
-;;          sx (+ ox sx)
-;;          sy (+ oy sy)
-;;          clicks (when (map? comp)
-;;                   (for [[k handler] comp
-;;                         :when (and (.startsWith (-> k name) "on-")
-;;                                    handler)]
-;;                     (let [[w h] (bounds comp)]
-;;                       [k [sx sy w h] handler comp])))
-;;          child-clicks (mapcat #(find-mouse-handlers % [sx sy]) (zzseq (zzchildren comp)))]
-;;      (remove nil? (concat child-clicks clicks)))))
-;; (defr mouse-handlers
-;;   (into [] (find-mouse-handlers components)))
 (defn find-event-handlers [comp]
   (remove nil?
           (concat
@@ -1028,3 +984,23 @@
                    
                    
                    nil)))))))
+(defr time-text "whoohoo")
+
+(defr components
+    (move 10 10
+     (vertical-layout
+     
+      (label "Time Tracker 3000" :font-size 45)
+      (spacer 0 20)
+      (horizontal-layout
+       (button "add start time")
+       (spacer 20 0)
+       (button "add end time!")
+       )
+      (spacer 0 20)
+      (text-input time-text (key-handler 'time-text))
+      )))
+
+
+(defr test-text "hi")
+(defr components (text-input test-text (key-handler 'test-text)))
