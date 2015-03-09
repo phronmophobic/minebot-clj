@@ -27,6 +27,7 @@
                  [org.python/jython-standalone "2.7-b3"]
                  [clojure-python "0.4.1" :exclusions [org.clojure/clojure
                                                       org.python/jython-standalone]]
+                 [com.taoensso/faraday "1.5.0"]
 
                  [phronmophobic/penumbra "0.6.6-SNAPSHOT"]
 
