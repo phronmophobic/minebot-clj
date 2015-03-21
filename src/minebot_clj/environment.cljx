@@ -82,7 +82,6 @@
         (let [ref (get refs name)
               old-val (deref ref)
               new-val (eval-in this evaluable deps)]
-          ;; (msg "updating " name)
           (when (not= old-val new-val)
             (set-ref! ref new-val)
             (doseq [[other-name other-deps] (:deps this)
@@ -143,10 +142,10 @@
 (defn get-renv-value [name]
   (deref (get-renv-ref name)))
 
-(defn update-value [name f]
+(defn update-value [name f & args]
   (dosync
    (let [old-val (get-renv-value name)
-         new-val (f old-val)
+         new-val (apply f old-val args)
          evaluable (constant-evaluable new-val)]
      (set-value name evaluable nil))))
 
@@ -169,8 +168,8 @@
                                                      [(list 'quote k)
                                                       k])])))
 
-(defmacro ru! [name fn]
-  `(update-value (quote ~name) ~fn))
+(defmacro ru! [name fn & args]
+  `(update-value (quote ~name) ~fn ~@args))
 
 
 (defmacro defr [name form]

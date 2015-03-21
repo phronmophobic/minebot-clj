@@ -9,9 +9,7 @@
             [minebot-clj.environment :as env :refer [defr r! rv! ru! r?]])
   (:require [minebot-clj.zipper :as z :refer [zzedit zzup zzunzip zzseq zzget zzfirst zzrest defzzfn zzroot zznth zzroot? zzpath zzapply]]
             [minebot-clj.core :as bot])
-
   (:use [minebot-clj.evaluable])
-
   (:use [penumbra.opengl :exclude [color]]
         [penumbra.utils :only [defn-memo]])
   (:require [penumbra.app :as app]
@@ -378,8 +376,12 @@
 (defn filled-rectangle [color width height]
   (polygon color [0 0] [0 height]  [width height] [width 0]  [0 0]))
 
-(def ^:dynamic *origin* [0 0 0])
 
+
+(def ^:dynamic *origin* [0 0 0])
+(def ^:dynamic *view* nil )
+
+(gl-import- glScissor gl-scissor)
 (gl-import- glVertex3d gl-vertex)
 (gl-import- glNormal3d gl-normal)
 (gl-import- glTexCoord1d gl-tex-1)
@@ -450,12 +452,70 @@
           (finally
             (gl-pop-matrix)))))))
 
+(declare find-offset)
+(defcomponent ScrollArea [bounds offset drawable on-scroll scroll-offset-y]
+  IOrigin
+  (-origin [this]
+    [0 0])
+  IChildren
+  (-children [this]
+    [drawable])
+  IReplaceChildren
+  (-replace-children [this new-children]
+    (assert (= 1 (count new-children)))
+    (assoc this :drawable (first new-children)))
+  IBounds
+  (-bounds [this]
+    bounds)
+  IMouseWheel
+  (-mouse-wheel [this [[mx my] dwheel]]
+    ;; (let [[gx gy] (find-offset this)
+    ;;       [width height] bounds]
+    ;;   (when (and mx my
+    ;;              (>= mx gx)
+    ;;              (>= my gy)
+    ;;              (< mx (+ gx width))
+    ;;              (< my (+ gy height)))
+    ;;     (swap! scroll-offset-y - (/ (float dwheel) 50))
+    ;;     ))
+
+    (when on-scroll
+      (let [[gx gy] (find-offset this)
+            [width height] bounds]
+        (when (and mx my
+                   (>= mx gx)
+                   (>= my gy)
+                   (< mx (+ gx width))
+                   (< my (+ gy height)))
+          (on-scroll dwheel))))
+    )
+  IDraw
+  (draw [this state]
+    (let [[ox oy] offset
+          [gx gy _] *origin*
+          [_ _ view-width view-height] *view*
+          [width height] bounds]
+      (gl-scissor gx
+                  (- view-height gy height)
+                  (inc width)
+                  (inc height))
+      (with-enabled :scissor-test
+        (push-matrix
+         (translate (- ox) (int (- oy)) 0)
+         (draw drawable state)
+         )))))
+
+(defn scroll-area [bounds offset drawable & [on-scroll]]
+  (ScrollArea. (make-cid "scrollarea") bounds offset drawable on-scroll (atom 0)))
+
+
 (defn display [[dt t] state]
   (render-mode :solid)
   (binding [*origin* [0 0 0]
-            penumbra.opengl.core/*renderer* my-renderer]
+            penumbra.opengl.core/*renderer* my-renderer
+            *view* @penumbra.opengl.core/*view*]
     (with-event-bindings
-      (let [[x-origin y-origin w h] @penumbra.opengl.core/*view*]
+      (let [[x-origin y-origin w h] *view*]
         (when *root*
           (with-projection (ortho-view x-origin (+ x-origin w) (+ y-origin h) y-origin -1 1)
             (push-matrix
@@ -474,6 +534,12 @@
   state)
 
 (defn mouse-wheel [dwheel state]
+  (let [mx (:mx state)
+        my (:my state)]
+    (with-event-bindings
+      (doseq [handler (-> *event-handlers* :mouse-wheel)]
+        (-mouse-wheel handler [[mx my]  dwheel]))))
+
   state)
 
 
@@ -567,8 +633,8 @@
                    :key-release #'key-release
                    :key-type #'key-type}
         state {:width 650
-               :height 878
-               :top 0
+               :height 800
+               :top 60
                :mx 0
                :my 0
                :font-cache (atom {})
@@ -582,9 +648,14 @@
       (go
         (binding [*out* out]
           (try
+            (add-watch root :repaint
+                       (fn [& args]
+                         (app/repaint! @current-app)))
             (app/start-single-thread @current-app loop/basic-loop)
             (catch Exception e
-              (clojure.stacktrace/print-stack-trace e))))))
+              (clojure.stacktrace/print-stack-trace e))
+            (finally
+              (remove-watch root :repaint))))))
     nil))
 
 
@@ -710,166 +781,170 @@
   (if more
     (let [[_ dy] (bounds elem)
           [_ oy] (origin elem)]
-      [elem (move 0 (+ oy dy)
+      [elem (move 0 (+ oy dy 1)
                   (apply vertical-layout more))])
     elem))
 (defn horizontal-layout [elem & more]
   (if more
     (let [[dx _] (bounds elem)
           [ox _] (origin elem)]
-      [elem (move (+ ox dx) 0
+      [elem (move (+ ox dx 1) 0
                   (apply horizontal-layout more))])
     elem))
+
+(defn center [elem [width height]]
+  (let [[ewidth eheight] (bounds elem)]
+    (move (int (- (/ width 2)
+                  (/ ewidth 2)))
+          (int (- (/ height 2)
+                  (/ eheight 2)))
+          elem)))
 
 (defzzfn zzchildren :children children)
 (defmethod z/back :children [_ old-val new-val]
   (-replace-children old-val new-val))
 
 
-(defr ch nil)
-(defr whoo-text "whoo")
-(defr status "status")
-(defr rwidth 50)
-(defr rheight 10)
+;; (defr ch nil)
+;; (defr whoo-text "whoo")
+;; (defr status "status ")
+;; (defr rwidth 50)
+;; (defr rheight 10)
 
-#_(r! components [(vertical-layout
-                   (label "Minecraft Foo" :font-size 35)
-                 (move 0 30
-                       (vertical-layout
-                        (horizontal-layout
-                         (button "Connect!"
-                                 (fn []
-                                   (try
-                                     (go
-                                       (let [mych (bot/do-something :local)]
-                                         (r! ch mych)))
-                                     (catch Exception e
-                                       (clojure.stacktrace/print-stack-trace e)))))
-                         (button "disconnect"
-                                 (fn []
-                                   (bot/kill-chans))))
+;; #_(r! components [(vertical-layout
+;;                    (label "Minecraft Foo" :font-size 35)
+;;                  (move 0 30
+;;                        (vertical-layout
+;;                         (horizontal-layout
+;;                          (button "Connect!"
+;;                                  (fn []
+;;                                    (try
+;;                                      (go
+;;                                        (let [mych (bot/do-something :local)]
+;;                                          (r! ch mych)))
+;;                                      (catch Exception e
+;;                                        (clojure.stacktrace/print-stack-trace e)))))
+;;                          (button "disconnect"
+;;                                  (fn []
+;;                                    (bot/kill-chans))))
                                                 
                         
                         
-                        (rectangle rwidth rheight)
+;;                         (rectangle rwidth rheight)
                         
 
-                        (move
-                         0 10
-                         (horizontal-layout
-                          (button "speak."
-                                  (fn []
-                                    (put! ch (bot/chat whoo-text))
-                                    (println whoo-text)))
-                          (text-input whoo-text
-                                      (fn [key]
-                                        (let [new-text
-                                              (cond
-                                               (= :back key)
-                                               (subs whoo-text 0 (max 0 (dec (.length whoo-text))))
+;;                         (move
+;;                          0 10
+;;                          (horizontal-layout
+;;                           (button "speak."
+;;                                   (fn []
+;;                                     (put! ch (bot/chat whoo-text))
+;;                                     (println whoo-text)))
+;;                           (text-input whoo-text
+;;                                       (fn [key]
+;;                                         (let [new-text
+;;                                               (cond
+;;                                                (= :back key)
+;;                                                (subs whoo-text 0 (max 0 (dec (.length whoo-text))))
                                                
-                                               (string? key)
-                                               (str whoo-text key))]
-                                          (cond
-                                           new-text
-                                           (r! whoo-text new-text)
+;;                                                (string? key)
+;;                                                (str whoo-text key))]
+;;                                           (cond
+;;                                            new-text
+;;                                            (r! whoo-text new-text)
 
-                                           (= :return key)
-                                           (do
-                                             (put! ch (bot/chat whoo-text))
-                                             (r! whoo-text ""))))))))
-                        (let [w 100
-                              h 40
-                              -cid (make-cid "keys")]
-                         (reify
-                           IComponent
-                           (cid [this]
-                             -cid)
-                           IFocus
-                           IKeyPress
-                           (-key-press [this key]
-                             (when (= (cid this) *focus*)
-                               (let [key-map
-                                     {" " [0 1 0]
-                                      :return [0 -1 0]
-                                      :up [1 0 0]
-                                      :left [0 0 1]
-                                      :right [0 0 -1]
-                                      :down [-1 0 0]}]
-                                 (if-let [[ox oy oz] (get key-map key)]
-                                   (let [[x y z] (bot/integerize-position @bot/position)]
-                                     (reset! bot/path [[(+ ox x)
-                                                        (+ oy y)
-                                                        (+ oz z)]]))
-                                   (cond
-                                    (= key "d")
-                                    (when @bot/position
-                                       (let [face 0
-                                             [px py pz] (bot/integerize-position @bot/position)
-                                             [x y z] [(inc px) (dec py) pz]
-                                             status 2]
-                                         (put! ch (bot/player-digging 0 x y z 0))))
+;;                                            (= :return key)
+;;                                            (do
+;;                                              (put! ch (bot/chat whoo-text))
+;;                                              (r! whoo-text ""))))))))
+;;                         (let [w 100
+;;                               h 40
+;;                               -cid (make-cid "keys")]
+;;                          (reify
+;;                            IComponent
+;;                            (cid [this]
+;;                              -cid)
+;;                            IFocus
+;;                            IKeyPress
+;;                            (-key-press [this key]
+;;                              (when (= (cid this) *focus*)
+;;                                (let [key-map
+;;                                      {" " [0 1 0]
+;;                                       :return [0 -1 0]
+;;                                       :up [1 0 0]
+;;                                       :left [0 0 1]
+;;                                       :right [0 0 -1]
+;;                                       :down [-1 0 0]}]
+;;                                  (if-let [[ox oy oz] (get key-map key)]
+;;                                    (let [[x y z] (bot/integerize-position @bot/position)]
+;;                                      (reset! bot/path [[(+ ox x)
+;;                                                         (+ oy y)
+;;                                                         (+ oz z)]]))
+;;                                    (cond
+;;                                     (= key "d")
+;;                                     (when @bot/position
+;;                                        (let [face 0
+;;                                              [px py pz] (bot/integerize-position @bot/position)
+;;                                              [x y z] [(inc px) (dec py) pz]
+;;                                              status 2]
+;;                                          (put! ch (bot/player-digging 0 x y z 0))))
 
-                                    (= key "t")
-                                    (swap! bot/looking
-                                            (fn [looking]
-                                              (if looking
-                                                (let [[yaw pitch] looking]
-                                                  [(+ 90 yaw) pitch])
-                                                [0 0])))
+;;                                     (= key "t")
+;;                                     (swap! bot/looking
+;;                                             (fn [looking]
+;;                                               (if looking
+;;                                                 (let [[yaw pitch] looking]
+;;                                                   [(+ 90 yaw) pitch])
+;;                                                 [0 0])))
                                     
-                                    )))))
+;;                                     )))))
                            
-                           IBounds
-                           (-bounds [_]
-                             [w h])
+;;                            IBounds
+;;                            (-bounds [_]
+;;                              [w h])
 
-                           IDraw
-                           (draw [this state]
-                             (let [focus? (= (cid this) *focus*)]
-                               (draw (if focus?
-                                       (filled-rectangle [1 0 1] w h)
-                                       (rectangle w h))
-                                     state)))))
-                        (button "Come"
-                                (fn []
-                                  (bot/try-move-to-player ch)))
-                        (button "tp to me"
-                                (fn []
-                                  (put! ch (bot/chat "/tp treehugger1234 phronmophobic"))))
-                        (button "respawn"
-                                (fn []
-                                  (put! ch (bot/respawn))))
-                        (horizontal-layout
-                         (button "creative mode"
-                                 (fn []
-                                   (put! ch (bot/chat "/gamemode creative"))))
-                         (button "adventure mode"
-                                 (fn []
-                                   (put! ch (bot/chat "/gamemode adventure"))))
-                         (button "survival mode"
-                                 (fn []
-                                   (put! ch (bot/chat "/gamemode survival")))))
-                        (button "make it day"
-                                (fn []
-                                  (put! ch (bot/chat "/time set day"))))
-                        (button "toggle rain"
-                                (fn []
-                                  (put! ch (bot/chat "/toggledownfall"))))
-                        (horizontal-layout
-                         (button "command")
-                         (text-input whoo-text))
-                        )
-                       )
+;;                            IDraw
+;;                            (draw [this state]
+;;                              (let [focus? (= (cid this) *focus*)]
+;;                                (draw (if focus?
+;;                                        (filled-rectangle [1 0 1] w h)
+;;                                        (rectangle w h))
+;;                                      state)))))
+;;                         (button "Come"
+;;                                 (fn []
+;;                                   (bot/try-move-to-player ch)))
+;;                         (button "tp to me"
+;;                                 (fn []
+;;                                   (put! ch (bot/chat "/tp treehugger1234 phronmophobic"))))
+;;                         (button "respawn"
+;;                                 (fn []
+;;                                   (put! ch (bot/respawn))))
+;;                         (horizontal-layout
+;;                          (button "creative mode"
+;;                                  (fn []
+;;                                    (put! ch (bot/chat "/gamemode creative"))))
+;;                          (button "adventure mode"
+;;                                  (fn []
+;;                                    (put! ch (bot/chat "/gamemode adventure"))))
+;;                          (button "survival mode"
+;;                                  (fn []
+;;                                    (put! ch (bot/chat "/gamemode survival")))))
+;;                         (button "make it day"
+;;                                 (fn []
+;;                                   (put! ch (bot/chat "/time set day"))))
+;;                         (button "toggle rain"
+;;                                 (fn []
+;;                                   (put! ch (bot/chat "/toggledownfall"))))
+;;                         (horizontal-layout
+;;                          (button "command")
+;;                          (text-input whoo-text))
+;;                         )
+;;                        )
 
-                 (move 0 10
-                       (label status)))])
+;;                  (move 0 10
+;;                        (label status)))])
 
 
-(defr app-repaint!
-  (when @current-app
-    components
-    (app/repaint! @current-app)))
 
 
 (defn find-elems
@@ -915,16 +990,16 @@
      [(- x ox)
       (- y oy)])))
 
-
 (defn find-event-handlers [comp]
   (remove nil?
           (concat
            (mapcat find-event-handlers (children comp))
            (keep #(when (satisfies? % comp)
                     [(event-interface-key %) comp])
-                 [IKeyPress IMouseMove IMouseDown]))))
-(defr event-handlers
-  (->> (find-event-handlers components)
+                 [IKeyPress IMouseMove IMouseDown IMouseWheel]))))
+
+(defn make-event-handlers [comp]
+  (->> (find-event-handlers comp)
        (group-by first)
        (map (fn [[k v]]
               [k (map second v)]))
@@ -934,73 +1009,56 @@
 
 
 
-(defr movements
-  [:up
-   :down
-   :right
-   :right
-   :right
-   :right
-   :up])
-(defr movelength 20)
-(defr proposed-segment nil)
-#_(r! components
-    (move 100 100
-          (reify
-            IComponent
-            IMouseMove
-            (-mouse-move [this [mx my]])
-            IKeyPress
-            (-key-press [this key]
-              (let [v (conj movements key)]
-                (r! movements v)))
+(defn remove-nth [v i]
+  (vec (concat (take i v) (drop (inc i) v))))
 
-            IDraw
-            (draw [this state]
-              (push-matrix
-               (doseq [movement movements]
-                 (case movement
-                   :up
-                   (do
-                     (draw (path [0 0] [0 (- movelength)])
-                           state)
-                     (translate 0 (- movelength)))
-                   :down
-                   (do
-                     (draw (path [0 0] [0 movelength])
-                           state)
-                     (translate 0 movelength))
+;; (defr movements
+;;   [:up
+;;    :down
+;;    :right
+;;    :right
+;;    :right
+;;    :right
+;;    :up])
+;; (defr movelength 20)
+;; (defr proposed-segment nil)
+;; #_(r! components
+;;     (move 100 100
+;;           (reify
+;;             IComponent
+;;             IMouseMove
+;;             (-mouse-move [this [mx my]])
+;;             IKeyPress
+;;             (-key-press [this key]
+;;               (let [v (conj movements key)]
+;;                 (r! movements v)))
 
-                   :right
-                   (do
-                     (draw (path [0 0] [movelength 0])
-                           state)
-                     (translate movelength 0))
-                   :left
-                   (do
-                     (draw (path [0 0] [(- movelength) 0])
-                           state)
-                     (translate (- movelength) 0))
+;;             IDraw
+;;             (draw [this state]
+;;               (push-matrix
+;;                (doseq [movement movements]
+;;                  (case movement
+;;                    :up
+;;                    (do
+;;                      (draw (path [0 0] [0 (- movelength)])
+;;                            state)
+;;                      (translate 0 (- movelength)))
+;;                    :down
+;;                    (do
+;;                      (draw (path [0 0] [0 movelength])
+;;                            state)
+;;                      (translate 0 movelength))
+
+;;                    :right
+;;                    (do
+;;                      (draw (path [0 0] [movelength 0])
+;;                            state)
+;;                      (translate movelength 0))
+;;                    :left
+;;                    (do
+;;                      (draw (path [0 0] [(- movelength) 0])
+;;                            state)
+;;                      (translate (- movelength) 0))
                    
                    
-                   nil)))))))
-(defr time-text "whoohoo")
-
-(defr components
-    (move 10 10
-     (vertical-layout
-     
-      (label "Time Tracker 3000" :font-size 45)
-      (spacer 0 20)
-      (horizontal-layout
-       (button "add start time")
-       (spacer 20 0)
-       (button "add end time!")
-       )
-      (spacer 0 20)
-      (text-input time-text (key-handler 'time-text))
-      )))
-
-
-(defr test-text "hi")
-(defr components (text-input test-text (key-handler 'test-text)))
+;;                    nil)))))))

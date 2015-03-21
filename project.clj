@@ -28,10 +28,16 @@
                  [clojure-python "0.4.1" :exclusions [org.clojure/clojure
                                                       org.python/jython-standalone]]
                  [com.taoensso/faraday "1.5.0"]
+                 [clj-time "0.9.0"]
 
                  [phronmophobic/penumbra "0.6.6-SNAPSHOT"]
 
                  ]
+  ;; :java-cmd "/Library/Java/JavaVirtualMachines/jdk1.7.0_45.jdk/Contents/Home/bin/java"
+  :jvm-opts ["-XX:MaxPermSize=128m"
+             "-XX:+UseConcMarkSweepGC"
+             "-XX:+CMSClassUnloadingEnabled"]
+  
   :profiles {:dev {:plugins [[com.keminglabs/cljx "0.4.0"]]}}
   :cljx {:builds [{:source-paths ["src"]
                    :output-path "src"
