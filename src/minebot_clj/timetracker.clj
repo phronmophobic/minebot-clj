@@ -319,9 +319,100 @@
 (def a 1)
 
 
+
+
+
+(defn check-start-stop-format [times]
+  (let [start-stops (filter (fn [[dt type]]
+                              (#{:start :stop} type))
+                            times)
+        start-stops (sort-by (fn [[[hour min] type]]
+                              [hour min])
+                             start-stops)
+        assertions
+        [["should be an even number of starts and stops"
+          (fn []
+            (println start-stops)
+            (even? (count start-stops)))]
+         ["starts and stops should be in pairs"
+          (fn []
+            (every? (fn [[type1 type2]]
+                      (and (= type1 :start)
+                           (= type2 :stop)))
+                    (->> start-stops
+                         (map second)
+                         (partition 2))))]
+         ["starts should come before stops"
+          (fn []
+            (every? (fn [[t1 t2]]
+                      (neg? (compare t1 t2)))
+                    (->> start-stops
+                         (map first)
+                         (partition 2))))]]]
+    ;; return first false assertion
+    (loop [[[msg pred :as assertion] & more] assertions]
+      (when assertion
+        (if-not (pred)
+          msg
+          (recur more))))))
+
+(defn hours-from-intervals [times]
+  (->> times
+       (remove (fn [[dt type]]
+                 (#{:start :stop} type)))
+       (reduce (fn [hours [[dhours dmin] type]]
+                 (let [delta-hours (+ dhours
+                                      (/ (float dmin) 60))
+                       delta-hours (if (#{:work} type)
+                                     delta-hours
+                                     (- delta-hours))]
+                   (+ hours delta-hours)))
+               0)))
+
+(defn hours-from-spans [times]
+  (->> times
+       (filter (fn [[dt type]]
+                 (#{:start :stop} type)))
+       (partition 2)
+       (reduce (fn [hours [[[hr1 min1] type] [[hr2 min2] type]]]
+                 (let [t1 (+ hr1 (/ (float min1) 60))
+                       t2 (+ hr2 (/ (float min2) 60))
+                       delta-hours (- t2 t1)]
+                   (println t1 t2)
+                   (+ hours delta-hours)))
+               0)))
+
+(defn calc-time [times]
+  (if-let [error (check-start-stop-format times)]
+    [error nil]
+    (let [hours (+ (hours-from-spans times)
+                   (hours-from-intervals times))]
+      [nil hours])))
+
+(defn make-invoice [dt]
+  (let [month (.get dt
+                    java.util.Calendar/MONTH)
+        days-in-month (.getActualMaximum dt (java.util.Calendar/DAY_OF_MONTH))
+        dates-for-month (for [day (range 1 (inc days-in-month))]
+                          (doto (.clone dt)
+                            (.set java.util.Calendar/DAY_OF_MONTH day)))
+        dt-times (for [dt dates-for-month
+                       :let [times (far/get-item client-opts :work {:dt (dt->str dt)})]
+                    :when times]
+                   times)
+        dt-hours (into {}
+                       (for [{:keys [dt times]} dt-times]
+                         [dt (calc-time times)]))]
+    dt-hours))
+
+(defr todays-invoice-hours
+  (calc-time times))
+
 (defr components
   [(rectangle window-width window-height)
    cal-stuff
+   (move 10 700
+         (label (str "invoice hours " todays-invoice-hours)))
    (move 10 10
          (vertical-layout
      
