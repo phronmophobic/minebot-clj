@@ -15,3 +15,6 @@ src/minebot_clj/environment.clj
 src/minebot_clj/environment.cljs
 src/minebot_clj/evaluable.clj
 src/minebot_clj/evaluable.cljs
+profiles.clj
+.lein-env
+todo.org

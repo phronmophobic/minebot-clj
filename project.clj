@@ -27,8 +27,12 @@
                  [org.python/jython-standalone "2.7-b3"]
                  [clojure-python "0.4.1" :exclusions [org.clojure/clojure
                                                       org.python/jython-standalone]]
+
+                 [clj-pdf "2.0.2"]
+
                  [com.taoensso/faraday "1.5.0"]
                  [clj-time "0.9.0"]
+                 [environ "1.0.0"]
 
                  [phronmophobic/penumbra "0.6.6-SNAPSHOT"]
 
@@ -39,6 +43,7 @@
              "-XX:+CMSClassUnloadingEnabled"]
   
   :profiles {:dev {:plugins [[com.keminglabs/cljx "0.4.0"]]}}
+  :plugins [[lein-environ "1.0.0"]]
   :cljx {:builds [{:source-paths ["src"]
                    :output-path "src"
                    :rules :clj}

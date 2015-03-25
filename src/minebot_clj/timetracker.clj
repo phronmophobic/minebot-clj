@@ -23,8 +23,9 @@
                      start
                      ]]
             [minebot-clj.environment :as env :refer [defr r! rv! ru! r?]])
-    (:require [taoensso.faraday :as far])
-)
+  (:require [clj-pdf.core :as pdf])
+  (:require [environ.core :refer [env]])
+  (:require [taoensso.faraday :as far]))
 
 
 
@@ -47,8 +48,8 @@
            (cond-let ~bindings ~@more))))))
 
 (def client-opts
-  {:access-key "AKIAJ5I7H72XUDGJBI4A"  ; For DynamoDB Local, just put some random string
-   :secret-key "6ezxfI+LSsWU08mg5aklXiBsBqY/TRZ7gpO81sU4 " ; For production, put your IAM keys here
+  {:access-key (env :aws-access-key)
+   :secret-key (env :aws-secret-key)
 
    ;; This line below is the only line that is added for DynamoDB Local.
    ;; Remove it (and add your IAM keys above) to run your code in production.
@@ -70,7 +71,7 @@
                     {:throughput {:read 1 :write 1} ; Read & write capacity (units/sec)
                      :block? true ; Block thread during table creation
                      })
- (far/list-tables client-opts)
+  (far/list-tables client-opts)
  (far/describe-table client-opts :work)
  (far/put-item client-opts
                :work {:dt (dt->num [3 2015])
@@ -242,20 +243,35 @@
 ;; need to make rv! actually work! with shaking.
 (defr current-date (java.util.GregorianCalendar.))
 
-(defr times (or (-> (far/get-item client-opts :work {:dt (dt->str current-date)})
-                    :times)
+
+
+(defr times (or (:times current-db-item)
                 []))
 
-(defn save! [dt times]
+(defr work-description "")
+
+(defr current-db-item
+  (let [db-item 
+        (far/get-item client-opts :work {:dt (dt->str current-date)})]
+    (rv! work-description
+         (or (:work-description db-item)
+             ""))
+    db-item))
+
+(defn save! [dt times work-description]
   (far/put-item client-opts
-                :work {:dt (dt->str dt)
-                       :times (far/freeze times)})
-  (env/shake! @(env/get-or-create-renv) 'times))
+                :work
+                (merge {:dt (dt->str dt)
+                        :times (far/freeze times)}
+                       (when (pos? (.length work-description))
+                         {:work-description work-description})))
+  (env/shake! @(env/get-or-create-renv) 'current-db-item))
 
 (defn add-time! []
   (let [time-text @time-text
          times @times
         dt @current-date
+        work-description @work-description
          ]
      (when (pos? (.length time-text))
        (when-let [new-time (try
@@ -263,7 +279,8 @@
                              (catch Exception e
                                (println "could not parse " time-text e)))]
          (save! dt
-                (conj times new-time))
+                (conj times new-time)
+                work-description)
          (rv! time-text "")))))
 
 (defn time-str [[dt type]]
@@ -308,7 +325,7 @@
                              (.add  java.util.Calendar/MONTH month-offset))
                            (fn [day]
                              (rv! current-date (doto (.clone @current-date)
-                                                  (.set java.util.Calendar/MONTH
+                                                 (.set java.util.Calendar/MONTH
                                                         (.get (doto (java.util.GregorianCalendar.)
                                                                 (.add  java.util.Calendar/MONTH month-offset))
                                                               java.util.Calendar/MONTH))
@@ -326,13 +343,10 @@
   (let [start-stops (filter (fn [[dt type]]
                               (#{:start :stop} type))
                             times)
-        start-stops (sort-by (fn [[[hour min] type]]
-                              [hour min])
-                             start-stops)
+
         assertions
         [["should be an even number of starts and stops"
           (fn []
-            (println start-stops)
             (even? (count start-stops)))]
          ["starts and stops should be in pairs"
           (fn []
@@ -378,17 +392,24 @@
                  (let [t1 (+ hr1 (/ (float min1) 60))
                        t2 (+ hr2 (/ (float min2) 60))
                        delta-hours (- t2 t1)]
-                   (println t1 t2)
                    (+ hours delta-hours)))
                0)))
 
 (defn calc-time [times]
-  (if-let [error (check-start-stop-format times)]
-    [error nil]
-    (let [hours (+ (hours-from-spans times)
-                   (hours-from-intervals times))]
-      [nil hours])))
+  (let [times (sort-by (fn [[t type]]
+                         [(not (#{:start :stop} type))
+                          t])
+                       times)]
+    (if-let [error (check-start-stop-format times)]
+      (throw (Exception. error))
+      (let [hours (+ (hours-from-spans times)
+                     (hours-from-intervals times))]
+        hours))))
 
+(defn format-money [money]
+  (.format (java.text.NumberFormat/getCurrencyInstance (java.util.Locale. "en" "US")) money))
+
+(declare render-invoice-pdf)
 (defn make-invoice [dt]
   (let [month (.get dt
                     java.util.Calendar/MONTH)
@@ -400,19 +421,69 @@
                        :let [times (far/get-item client-opts :work {:dt (dt->str dt)})]
                     :when times]
                    times)
-        dt-hours (into {}
-                       (for [{:keys [dt times]} dt-times]
-                         [dt (calc-time times)]))]
-    dt-hours))
+
+        format-invoice-date (fn [dt]
+                              (let [date-format (java.text.SimpleDateFormat. "MM/dd/yyyy")]
+                                (.format date-format  (.getTime dt))))
+        work-description (for [{:keys [dt times work-description]} dt-times
+                               :let [hours-worked (calc-time times)]
+                               :when (and hours-worked (pos? hours-worked))]
+                           [(format-invoice-date (str->dt dt))
+                            (or work-description "programming")
+                            hours-worked])
+        invoice-name (str "Invoice "
+                          (format-invoice-date
+                           (doto (.clone dt)
+                             (.set java.util.Calendar/DAY_OF_MONTH 1)))
+                          " - "
+                          (format-invoice-date
+                           (doto (.clone dt)
+                             (.set java.util.Calendar/DAY_OF_MONTH days-in-month))))
+        filename (str "invoice_"
+                      (dt->str (doto (.clone dt)
+                                 (.set java.util.Calendar/DAY_OF_MONTH 1)))
+                      ".pdf")
+        output (clojure.java.io/output-stream
+                (apply
+                 clojure.java.io/file
+                 (conj (-> env :invoice :path)
+                       filename)))]
+    (render-invoice-pdf
+     invoice-name
+     (format-invoice-date dt)
+     (-> env :invoice :to-address)
+     work-description
+     60
+     output)
+    ))
 
 (defr todays-invoice-hours
-  (calc-time times))
+  (try
+    (calc-time times)
+    (catch Exception e
+      (str e))))
+
+
 
 (defr components
   [(rectangle window-width window-height)
    cal-stuff
    (move 10 700
          (label (str "invoice hours " todays-invoice-hours)))
+   (move 10 640
+         (button "make invoice"
+                 (fn []
+                   (make-invoice current-date))))
+   (move 10 500
+         (horizontal-layout
+          (label "work description")
+          (text-input work-description
+                      (fn [s]
+                        (if (= s :return)
+                          (save! current-date
+                                 times
+                                 work-description)
+                          ((key-handler 'work-description) s))))))
    (move 10 10
          (vertical-layout
      
@@ -438,7 +509,8 @@
                (button "x"
                        (fn []
                          (save! current-date
-                                (remove #{time} times))))
+                                (remove #{time} times)
+                                work-description)))
                (spacer 20 0)
                (label (str (time-str time)
                            " " time) ))))
@@ -449,5 +521,58 @@
 
 (defr event-handlers
   (pen/make-event-handlers components))
+
+
+
+
+
+
+
+(defn render-invoice-pdf [invoice-name todays-date to-address work-description rate out]
+  (pdf/pdf
+   [{:title         invoice-name
+     :subject       "Some subject"
+     :creator       (-> env :invoice :name)
+     :right-margin  50
+     :author        (-> env :invoice :name)
+     :bottom-margin 40
+     :left-margin   40
+     :top-margin    40
+     :size          "a4"
+     ;;     :footer        "page"
+     }
+    [:heading invoice-name]
+    [:phrase [:chunk {:style :bold} "Date: "] todays-date]
+    [:spacer]
+    (-> env :invoice :name)
+    (-> env :invoice :address)
+
+    [:paragraph {:style :bold} "To:"]
+    to-address
+
+    [:spacer]
+    [:line]
+    [:spacer]
+
+    [:paragraph {:style :bold} "Overview of services"]
+    (into 
+     [:table {:header ["Date" "Description of work" "No. hours" "Amount Billed"]
+              :width 100
+              :border true
+              :cell-border true}]
+     (concat
+      (for [[dt description hours] work-description]
+        [dt description (str hours) (format-money (* rate hours))])
+      (list
+       (let [hours-sum (apply +
+                              (map #(nth % 2) work-description))]
+         [[:cell [:phrase {:style :bold} "Total"]]
+          "" (str hours-sum) (format-money (* (-> env :invoice :rate) hours-sum))]))
+      )
+     
+     )
+    ]
+   out))
+
 
 
