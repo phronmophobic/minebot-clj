@@ -718,24 +718,26 @@
 (defn text-input-components [text focus?]
   (let [tlabel (label text)
         [tw th] (bounds tlabel)
-        margin 10
-        padding 10]
-    (move
-     margin 0
-     [(if focus?
-        (filled-rectangle
-         [1 0 1]
-         (+ (* 2 padding)
-            tw)
-         (+ (* 2 padding)
-            th))
-        (rectangle
-         (+ (* 2 padding)
-            tw)
-         (+ (* 2 padding)
-            th)))
-      (move padding padding
-            (label text))])))
+        padding 10
+        lines (clojure.string/split text #"\n")
+        labels (apply
+                vertical-layout
+                (for [line lines]
+                  (label line)))
+        content
+        (vertical-layout
+         (spacer 0 padding)
+         (horizontal-layout (spacer padding 0) labels (spacer padding 0))
+         (spacer 0 padding))
+        [content-width content-height] (bounds content)
+        border (if focus?
+                 (filled-rectangle [1 0 1]
+                                   content-width
+                                   content-height)
+                 (rectangle content-width
+                          content-height))]
+    [border
+     content]))
 (defcomponent TextInput [text on-key]
   IFocus
 
