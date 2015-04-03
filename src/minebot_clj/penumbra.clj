@@ -714,7 +714,7 @@
 (defn button [text & [on-click on-hover hover?]]
   (Button. (make-cid "button") text on-click))
 
-
+(declare vertical-layout horizontal-layout)
 (defn text-input-components [text focus?]
   (let [tlabel (label text)
         [tw th] (bounds tlabel)
