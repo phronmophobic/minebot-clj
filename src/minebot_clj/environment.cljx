@@ -1,10 +1,13 @@
 (ns minebot-clj.environment
-  (:require [minebot-clj.evaluable :refer
-             [evaluate
-              evaluable?
-              ->ClojureEvaluable
-              constant-evaluable
-              dependencies]])
+  (:require
+   clojure.tools.reader
+   [minebot-clj.evaluable :refer
+    [evaluate
+     evaluable?
+     ->ClojureEvaluable
+     constant-evaluable
+     dependencies]]
+   minebot-clj.analyze)
 
   )
 
@@ -123,15 +126,20 @@
         (ref-set renv (set-ref @renv sym (ref nil))))
       (ref-set renv (set-form @renv sym evaluable deps))
       (shake! (deref renv) sym))
-     (-> @renv :refs (get sym)))))
+     (-> renv deref :refs (get sym)))))
 
-(defn set-value [name form locals]
-  (dosync
-   (let [renv (deref (get-or-create-renv))
-         evaluable (coerce-evaluable form locals)
-         val (eval-in renv evaluable (reactive-deps evaluable name))
-         evaluable (constant-evaluable val)]
-     (set-form-and-deps name evaluable {}))))
+(defn set-value
+  ([name form locals]
+   (set-value (get-or-create-renv)
+              name
+              form
+              locals))
+  ([renv name form locals]
+   (dosync
+    (let [evaluable (coerce-evaluable form locals)
+          val (eval-in @renv evaluable (reactive-deps evaluable name))
+          evaluable (constant-evaluable val)]
+      (set-form-and-deps renv name evaluable {})))))
 
 (defn get-renv-ref [name]
   (let [renv (get @all-envs *ns*)]
@@ -149,13 +157,37 @@
          evaluable (constant-evaluable new-val)]
      (set-value name evaluable nil))))
 
-(defmacro r! [name form]
-  `(set-form-and-deps (quote ~name)
-                      (coerce-evaluable (quote ~form)
-                                        (into {}
-                                              [~@(for [[k _] &env]
-                                                   [(list 'quote k)
-                                                    k])]))))
+(defn unquoted [form]
+  (let [subforms (tree-seq minebot-clj.analyze/seqable? seq form)]
+    (for [subform subforms
+          :when (and (seq? subform)
+                     (= (first subform) 'clojure.core/unquote))]
+      subform)))
+
+(defmacro r!
+  ([renv name form]
+   (let [form (clojure.walk/macroexpand-all form)
+         qforms (set (unquoted form))
+         smap (into {}
+                    (for [qform qforms]
+                      [qform (gensym)]))
+         requoted-form (clojure.walk/postwalk-replace
+                        smap
+                        form)]
+
+     `(set-form-and-deps ~renv
+                         (quote ~name)
+                         (coerce-evaluable (quote ~requoted-form)
+                                          (into {}
+                                                (concat
+                                                 [~@(for [[k _] &env]
+                                                      [(list 'quote k)
+                                                       k])]
+                                                 [~@(for [[qform sym] smap]
+                                                      [(list 'quote sym) (second qform)])])))
+                         nil)))
+  ([name form]
+   `(dosync (r! (get-or-create-renv) ~name ~form))))
 
 (defmacro r? [name]
   `(get-renv-value (quote ~name)))
