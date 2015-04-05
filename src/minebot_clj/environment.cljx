@@ -196,7 +196,12 @@
        (set-value renv name evaluable nil))))))
 
 (defn unquoted [form]
-  (let [subforms (tree-seq minebot-clj.analyze/seqable? seq form)]
+  (let [branch? (fn [form]
+                  (and (minebot-clj.analyze/seqable? form)
+                       ;; probably need some tests for nests (nesting)
+                       ;; also probably need to put more thought into this.
+                       (not (#{'r! 'with-renv 'rv! 'ru!} (first form)))))
+        subforms (tree-seq branch? seq form)]
     (for [subform subforms
           :when (and (seq? subform)
                      (= (first subform) 'clojure.core/unquote))]
@@ -204,7 +209,8 @@
 
 (defmacro r!
   ([renv name form]
-   (let [form (clojure.walk/macroexpand-all form)
+   (let [;; not sure why i was macro expanding before :-/. is this necessary?
+         ;; form (clojure.walk/macroexpand-all form)
          qforms (set (unquoted form))
          smap (into {}
                     (for [qform qforms]
@@ -273,7 +279,8 @@
                                   [(list 'quote sym)
                                    `(gensym ~prefix)])))
             defs# [~@(for [[sym form] bind-pairs
-                           :let [form (clojure.walk/macroexpand-all form)
+                           :let [;; not sure why i was macro expanding before :-/. is this necessary?
+                                 ;; form (clojure.walk/macroexpand-all form)
                                  qforms (set (unquoted form))
                                  smap (into {}
                                             (for [qform qforms]

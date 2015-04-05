@@ -138,15 +138,15 @@
      (button "Start"
              ~(fn []
                 (when-not @stop-server
-                  (let [stop-fn (fn []) #_(run-server #'handler {:port 8088})]
-                    (println stop-fn)
+                  (let [stop-fn (run-server #'handler {:port 8082})]
                     (rv! stop-server stop-fn)))))
      (spacer 20 0)
      (button "Stop"
              ~(fn []
                 (when @stop-server
                   (@stop-server)
-                  (rv! stop-server nil)))))
+                  (rv! stop-server nil)
+                  ))))
     (for [[_ _ elem-ref] route-list]
       @elem-ref))])
 
