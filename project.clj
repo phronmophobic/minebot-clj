@@ -33,18 +33,26 @@
                  [com.taoensso/faraday "1.5.0"]
                  [clj-time "0.9.0"]
                  [environ "1.0.0"]
+                 [org.clojure/algo.graph "0.1.0-SNAPSHOT"]
 
                  [phronmophobic/penumbra "0.6.6-SNAPSHOT"]
 
+                 [http-kit "2.1.11"]
+                 [compojure "1.1.6"]
+                 [ring-mock "0.1.5"]
+                 [javax.servlet/servlet-api "2.5"]
+
+                 
                  ]
   ;; :java-cmd "/Library/Java/JavaVirtualMachines/jdk1.7.0_45.jdk/Contents/Home/bin/java"
   :jvm-opts ["-XX:MaxPermSize=128m"
              "-XX:+UseConcMarkSweepGC"
              "-XX:+CMSClassUnloadingEnabled"]
   
-  :profiles {:dev {:plugins [[com.keminglabs/cljx "0.4.0"]]}}
+  :profiles {:dev {:plugins [[com.kemingblabs/cljx "0.4.0"]]}}
   :plugins [[lein-environ "1.0.0"]]
-  :cljx {:builds [{:source-paths ["src"]
+  :repositories {"sonatype-oss-public" "https://oss.sonatype.org/content/groups/public/"}
+    :cljx {:builds [{:source-paths ["src"]
                    :output-path "src"
                    :rules :clj}
                   {:source-paths ["src"]

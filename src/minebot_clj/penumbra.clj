@@ -716,7 +716,13 @@
 
 (declare vertical-layout horizontal-layout)
 (defn text-input-components [text focus?]
-  (let [tlabel (label text)
+  (let [text (if (instance? clojure.lang.IDeref text)
+               @text
+               text)
+        text (if-not (string? text)
+               (str text)
+               text)
+        tlabel (label text)
         [tw th] (bounds tlabel)
         padding 10
         lines (clojure.string/split text #"\n")
@@ -763,21 +769,25 @@
 (defn text-input [initial-text & [on-key]]
   (TextInput. (make-cid "textinput") initial-text on-key))
 
-(defn key-handler [sym]
-  (fn [key]
-    (env/update-value
-     sym
-     (fn [old-text]
-       (let [new-text
-             (cond
-              (= :back key)
-              (subs old-text 0 (max 0 (dec (.length old-text))))
-              
-              (string? key)
-              (str old-text key))]
-         (if new-text
-           new-text
-           old-text))))))
+(defn key-handler
+  ([sym]
+   (key-handler (env/get-or-create-renv) sym))
+  ([renv sym]
+   (fn [key]
+     (env/update-value
+      renv
+      sym
+      (fn [old-text]
+        (let [new-text
+              (cond
+               (= :back key)
+               (subs old-text 0 (max 0 (dec (.length old-text))))
+               
+               (string? key)
+               (str old-text key))]
+          (if new-text
+            new-text
+            old-text)))))))
 
 (defn vertical-layout [elem & more]
   (if more

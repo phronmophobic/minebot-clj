@@ -104,6 +104,15 @@
                (assoc @all-envs *ns* (ref (environment)))))
   (get @all-envs *ns*))
 
+(defn reset-env!
+  ([]
+   (dosync
+    (reset-env! (get-or-create-renv))))
+  ([renv]
+   (dosync
+    (ref-set renv
+             (Environment. {} {} {})))))
+
 (defn coerce-evaluable [form locals]
   (if (evaluable? form)
     form
@@ -141,21 +150,50 @@
           evaluable (constant-evaluable val)]
       (set-form-and-deps renv name evaluable {})))))
 
-(defn get-renv-ref [name]
-  (let [renv (get @all-envs *ns*)]
-    (-> @renv
-        :refs
-        (get name))))
+(defn get-renv-ref
+  ([name]
+   (get-renv-ref (get-or-create-renv) name))
+  ([renv name]
+   (-> @renv
+       :refs
+       (get name))))
 
-(defn get-renv-value [name]
-  (deref (get-renv-ref name)))
+(defn get-renv-deps
+  ([name]
+   (get-renv-deps (get-or-create-renv) name))
+  ([renv name]
+   (-> @renv
+       :deps
+       (get name))))
 
-(defn update-value [name f & args]
-  (dosync
-   (let [old-val (get-renv-value name)
-         new-val (apply f old-val args)
-         evaluable (constant-evaluable new-val)]
-     (set-value name evaluable nil))))
+(defn get-renv-form
+  ([name]
+   (get-renv-form (get-or-create-renv) name))
+  ([renv name]
+   (-> @renv
+       :evaluables
+       (get name)
+       :form)))
+
+(defn get-renv-value
+  ([name]
+   (get-renv-value (get-or-create-renv) name))
+  ([renv name]
+   (when-let [val-ref (get-renv-ref renv name)]
+     (deref val-ref))))
+
+(defn update-value
+  ([name f & args]
+   (let [[renv name f args] (if (symbol? name)
+                              [(get-or-create-renv) name f args]
+                              (do
+                                (assert (>= (count args) 1) "Bad args]")
+                                [name f (first args) (rest args)]))]
+    (dosync
+     (let [old-val (get-renv-value renv name)
+           new-val (apply f old-val args)
+           evaluable (constant-evaluable new-val)]
+       (set-value renv name evaluable nil))))))
 
 (defn unquoted [form]
   (let [subforms (tree-seq minebot-clj.analyze/seqable? seq form)]
@@ -189,8 +227,11 @@
   ([name form]
    `(dosync (r! (get-or-create-renv) ~name ~form))))
 
-(defmacro r? [name]
-  `(get-renv-value (quote ~name)))
+(defmacro r?
+  ([renv name]
+   `(get-renv-value ~renv (quote ~name)))
+  ([name]
+   `(get-renv-value (quote ~name))))
 
 
 
@@ -208,4 +249,54 @@
   `(do
      (r! ~name ~form)
      (def ~(vary-meta name assoc :reactive? true) (get-renv-ref (quote ~name)))))
+
+
+
+(defmacro with-renv
+  ([renv bindings & body]
+   (assert (vector? bindings) "a vector for its binding")
+   (assert (even? (count bindings)) "an even number of forms in binding vector")
+   (let [bind-pairs (partition 2 bindings)
+         gensym-map-sym (gensym "gensym-map__")]
+     ;; some code duplication with r!
+     `(let [renv# ~renv
+            locals# [~@(for [[k _] &env]
+                         [(list 'quote k)
+                          k])]
+            ~gensym-map-sym (hash-map
+                             ~@(apply
+                                concat
+                                (for [[sym _] bind-pairs
+                                      :when (-> sym name (.endsWith "#"))
+                                      :let [sname (name sym)
+                                            prefix (str (subs sname 0 (dec (count sname))) "__")]]
+                                  [(list 'quote sym)
+                                   `(gensym ~prefix)])))
+            defs# [~@(for [[sym form] bind-pairs
+                           :let [form (clojure.walk/macroexpand-all form)
+                                 qforms (set (unquoted form))
+                                 smap (into {}
+                                            (for [qform qforms]
+                                              [qform (gensym)]))
+                                 form (clojure.walk/postwalk-replace
+                                       smap
+                                       form)]]
+                       [`(get ~gensym-map-sym (quote ~sym) (quote ~sym))
+                        `(clojure.walk/postwalk-replace
+                          ~gensym-map-sym
+                          (quote ~form))
+                        (vec
+                         (for [[qform sym] smap]
+                           [(list 'quote (list 'quote sym))
+                            `(clojure.walk/postwalk-replace
+                              ~gensym-map-sym
+                              (quote ~(second qform)))]))])]]
+        (doseq [[sym# form# unquoteds#] defs#]
+          (set-form-and-deps renv#
+                             sym#
+                             (->ClojureEvaluable *ns* form#
+                                                 (into
+                                                  {}
+                                                  (concat locals# (eval unquoteds#))))
+                             nil))))))
 

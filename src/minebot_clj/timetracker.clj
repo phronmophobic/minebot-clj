@@ -477,7 +477,9 @@
    (move 10 500
          (horizontal-layout
           (label "work description")
-          (text-input work-description
+          (text-input (clojure.string/join "\n"
+                                           (map (partial apply str)
+                                                (partition-all 40 work-description)))
                       (fn [s]
                         (if (= s :return)
                           (save! current-date
