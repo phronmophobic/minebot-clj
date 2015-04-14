@@ -1776,25 +1776,25 @@ foo.speak(\"starting...\")
 
 
 
-(let [outer-ns *ns*]
-  (defn -main [& args]
-    (try
-      (binding [*ns* outer-ns]
-        (r! minebot-ui
-            (show-web-ui :minebot2
-               html)))
+;; (let [outer-ns *ns*]
+;;   (defn -main [& args]
+;;     (try
+;;       (binding [*ns* outer-ns]
+;;         (r! minebot-ui
+;;             (show-web-ui :minebot2
+;;                html)))
      
-     (catch Exception e
-       (msg (with-out-str
-              (clojure.stacktrace/print-stack-trace e)))
-       nil))
-    (<!!
-     (let [quit-ch (chan)]
-       (.execute
-        (.getNonBlockingMainQueueExecutor (com.apple.concurrent.Dispatch/getInstance))
-        (fn []
-          (try
-            (>!! quit-ch true)
-            (catch Exception e
-              (msg e)))))
-       quit-ch))))
+;;      (catch Exception e
+;;        (msg (with-out-str
+;;               (clojure.stacktrace/print-stack-trace e)))
+;;        nil))
+;;     (<!!
+;;      (let [quit-ch (chan)]
+;;        (.execute
+;;         (.getNonBlockingMainQueueExecutor (com.apple.concurrent.Dispatch/getInstance))
+;;         (fn []
+;;           (try
+;;             (>!! quit-ch true)
+;;             (catch Exception e
+;;               (msg e)))))
+;;        quit-ch))))

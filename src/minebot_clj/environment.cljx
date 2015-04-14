@@ -200,7 +200,7 @@
                   (and (minebot-clj.analyze/seqable? form)
                        ;; probably need some tests for nests (nesting)
                        ;; also probably need to put more thought into this.
-                       (not (#{'r! 'with-renv 'rv! 'ru!} (first form)))))
+                       (not (#{'r! 'with-renv 'rv! 'ru! 'clojure.core/unquote} (first form)))))
         subforms (tree-seq branch? seq form)]
     (for [subform subforms
           :when (and (seq? subform)

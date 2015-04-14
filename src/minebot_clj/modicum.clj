@@ -27,7 +27,7 @@
                      text-input
                      start
                      ]]
-            [minebot-clj.environment :as env :refer [defr r! rv! ru! r?]])
+            [minebot-clj.environment :as env :refer [defr r! rv! ru! r? with-renv]])
   (:require [minebot-clj.evaluable :refer
              [evaluate
               evaluable?
@@ -64,6 +64,18 @@
     IKeyPress
     (-key-press [this key]
       (key-fn key))))
+
+(defn key-handler2 [renv text val]
+  (fn [s]
+    (println text val)
+    (cond
+     (= s :return)
+     (env/set-value renv val (env/get-renv-value renv text) #{})
+
+     :else
+     ((key-handler renv text) s))
+    (dosync
+     (env/shake! (deref (env/get-or-create-renv)) 'components))))
 
 (defr myenv (env/environment))
 
@@ -140,33 +152,51 @@
                  (nil? pen/*focus*))
         (ru! cell-add? not))))
    (mouse-thing
-    (fn [mx my]
-      (when cell-add?
-        (let [cell-sym (gensym)
-              form '(+ 1 2 3 a)
-              editor-sym (gensym) ]
-          
-         (dosync
-          (env/set-form-and-deps
-           ~myenv cell-sym
-           (->ClojureEvaluable *ns* form {})
-           nil)
-          (env/set-form-and-deps
-           ~myenv editor-sym
-           (->ClojureEvaluable *ns*
-                               (list
-                                'cell-editor
-                                (str cell-sym)
-                                (list 'quote form)
-                                cell-sym
-                                mx my)
-                               {})
-           nil)
-          
-          (ru! cells
-               conj
-               (env/get-renv-ref ~myenv editor-sym))
-          (rv! cell-add? false))))))
+    ~(fn [mx my]
+       (when (r? cell-add?)
+         (let [myenv myenv]
+           (dosync
+            (with-renv myenv
+              [form# '(+ 1 2 3)
+               cell-name# "abc"
+               val-str# (str "dunno")
+               test# (println "hi")
+               elem# (move
+                      mx my
+                      (horizontal-layout
+                       (text-input cell-name# (key-handler myenv 'cell-name#))
+                       (text-input form# (key-handler myenv 'form#))
+                       (label val-str#)))]
+              (env/set-form-and-deps
+               myenv 'val-str# 
+               (->ClojureEvaluable *ns* `(when-let [~'cell-name (env/get-renv-value myenv 'cell-name#)]
+                                           (str (env/get-renv-value myenv
+                                                                    (symbol ~'cell-name)))) {})
+               #{'cell-name# 'form#})
+              (rv! cell-add? false)
+              (ru! cells conj (env/get-renv-ref myenv 'elem#)))))
+
+        #_(dosync
+           (env/set-form-and-deps
+            ~myenv cell-sym
+            (->ClojureEvaluable *ns* form {})
+            nil)
+           (env/set-form-and-deps
+            ~myenv editor-sym
+            (->ClojureEvaluable *ns*
+                                (list
+                                 'cell-editor
+                                 (str cell-sym)
+                                 (list 'quote form)
+                                 cell-sym
+                                 mx my)
+                                {})
+            nil)
+           
+           (ru! cells
+                conj
+                (env/get-renv-ref ~myenv editor-sym))
+           (rv! cell-add? false)))))
    (vertical-layout
     (label (str cell-add?))
     (label (str (into {}
@@ -207,96 +237,96 @@
 
 
  
-(defr cell-names ['a 'b 'c 'd 'e 'f] )
+;; (defr cell-names ['a 'b 'c 'd 'e 'f] )
 
-(r! myenv a 3)
-(r! myenv a/sform "3")
-(r! myenv b 6)
-(r! myenv b/sform "0")
-(r! myenv c 0)
-(r! myenv c/sform "0")
-(r! myenv d 0)
-(r! myenv d/sform "0")
-(r! myenv e (+ a b 2))
-(r! myenv e/sform "(+ a b 2)")
-(r! myenv f 0)
-(r! myenv f/sform "0")
-(r! error-str nil)
-(rv! args #{})
-(rv! args-sform (pr-str args))
-(rv! ret nil)
-(rv! ret-sform (pr-str ret))
+;; (r! myenv a 3)
+;; (r! myenv a/sform "3")
+;; (r! myenv b 6)
+;; (r! myenv b/sform "0")
+;; (r! myenv c 0)
+;; (r! myenv c/sform "0")
+;; (r! myenv d 0)
+;; (r! myenv d/sform "0")
+;; (r! myenv e (+ a b 2))
+;; (r! myenv e/sform "(+ a b 2)")
+;; (r! myenv f 0)
+;; (r! myenv f/sform "0")
+;; (r! error-str nil)
+;; (rv! args #{})
+;; (rv! args-sform (pr-str args))
+;; (rv! ret nil)
+;; (rv! ret-sform (pr-str ret))
 
 
 
-(r! components
-    (vertical-layout
-     (apply
-      vertical-layout
-      (for [nm cell-names]
-        (horizontal-layout
-         (label (str nm))
-         (spacer 20 0)
-         (text-input (env/get-renv-ref ~myenv (symbol (name nm) "sform"))
-                     (fn [s]
-                       (cond
-                        (= :return s)
-                        (try
-                          (dosync
-                           (env/set-form-and-deps
-                            ~myenv nm
-                            (->ClojureEvaluable *ns*
-                                                (read-string
-                                                 (env/get-renv-value ~myenv (symbol (name nm) "sform")))
-                                                {})
-                            nil))
-                          (r! error-str "")
-                          (catch Exception e
-                            (r! error-str ~(str e))))
+;; (r! components
+;;     (vertical-layout
+;;      (apply
+;;       vertical-layout
+;;       (for [nm cell-names]
+;;         (horizontal-layout
+;;          (label (str nm))
+;;          (spacer 20 0)
+;;          (text-input (env/get-renv-ref ~myenv (symbol (name nm) "sform"))
+;;                      (fn [s]
+;;                        (cond
+;;                         (= :return s)
+;;                         (try
+;;                           (dosync
+;;                            (env/set-form-and-deps
+;;                             ~myenv nm
+;;                             (->ClojureEvaluable *ns*
+;;                                                 (read-string
+;;                                                  (env/get-renv-value ~myenv (symbol (name nm) "sform")))
+;;                                                 {})
+;;                             nil))
+;;                           (r! error-str "")
+;;                           (catch Exception e
+;;                             (r! error-str ~(str e))))
 
-                        :else
-                        ((key-handler ~myenv (symbol (name nm) "sform")) s))))
-         (spacer 20 0)
-         (label (str (env/get-renv-value ~myenv nm)))
-         #_(text-input ))))
-     (label (str error-str))
-     (horizontal-layout
-      (text-input args-sform
-                  (fn [s]
-                    (cond
-                       (= :return s)
-                       (try
-                         (rv! args (read-string args-sform))
-                         (r! error-str "")
-                         (catch Exception e
-                           (r! error-str ~(str e))))
+;;                         :else
+;;                         ((key-handler ~myenv (symbol (name nm) "sform")) s))))
+;;          (spacer 20 0)
+;;          (label (str (env/get-renv-value ~myenv nm)))
+;;          #_(text-input ))))
+;;      (label (str error-str))
+;;      (horizontal-layout
+;;       (text-input args-sform
+;;                   (fn [s]
+;;                     (cond
+;;                        (= :return s)
+;;                        (try
+;;                          (rv! args (read-string args-sform))
+;;                          (r! error-str "")
+;;                          (catch Exception e
+;;                            (r! error-str ~(str e))))
 
-                       :else
-                       ((key-handler 'args-sform) s))))
-      (spacer 20 0)
-      (label (pr-str args)))
-     (horizontal-layout
-      (text-input ret-sform
-                  (fn [s]
-                    (cond
-                       (= :return s)
-                       (try
-                         (rv! ret (read-string ret-sform))
-                         (r! error-str "")
-                         (catch Exception e
-                           (r! error-str ~(str e))))
+;;                        :else
+;;                        ((key-handler 'args-sform) s))))
+;;       (spacer 20 0)
+;;       (label (pr-str args)))
+;;      (horizontal-layout
+;;       (text-input ret-sform
+;;                   (fn [s]
+;;                     (cond
+;;                        (= :return s)
+;;                        (try
+;;                          (rv! ret (read-string ret-sform))
+;;                          (r! error-str "")
+;;                          (catch Exception e
+;;                            (r! error-str ~(str e))))
 
-                       :else
-                       ((key-handler 'ret-sform) s))))
-      (spacer 20 0)
-      (label (pr-str ret)))
-     (when made-fn-str
-       (apply
-        vertical-layout
-        (for [line (clojure.string/split-lines made-fn-str)]
-          (label line))))
+;;                        :else
+;;                        ((key-handler 'ret-sform) s))))
+;;       (spacer 20 0)
+;;       (label (pr-str ret)))
+;;      (when made-fn-str
+;;        (apply
+;;         vertical-layout
+;;         (for [line (clojure.string/split-lines made-fn-str)]
+;;           (label line))))
      
-))
+;; ))
 
 
 (defn make-fn [renv args ret]
