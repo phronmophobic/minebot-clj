@@ -817,144 +817,150 @@
   (-replace-children old-val new-val))
 
 
-;; (defr ch nil)
-;; (defr whoo-text "whoo")
-;; (defr status "status ")
-;; (defr rwidth 50)
-;; (defr rheight 10)
+(defr ch nil)
+(defr whoo-text "whoo")
+(defr status "status ")
+(defr rwidth 50)
+(defr rheight 10)
 
-;; #_(r! components [(vertical-layout
-;;                    (label "Minecraft Foo" :font-size 35)
-;;                  (move 0 30
-;;                        (vertical-layout
-;;                         (horizontal-layout
-;;                          (button "Connect!"
-;;                                  (fn []
-;;                                    (try
-;;                                      (go
-;;                                        (let [mych (bot/do-something :local)]
-;;                                          (r! ch mych)))
-;;                                      (catch Exception e
-;;                                        (clojure.stacktrace/print-stack-trace e)))))
-;;                          (button "disconnect"
-;;                                  (fn []
-;;                                    (bot/kill-chans))))
+(defr event-handlers
+  (make-event-handlers components))
+(defr components [(vertical-layout
+                   (label "Minecraft Foo" :font-size 35)
+                 (move 0 30
+                       (vertical-layout
+                        (horizontal-layout
+                         (button "Connect!"
+                                 (fn []
+                                   (try
+                                     (go
+                                       (let [mych (bot/do-something :local)]
+                                         (r! ch mych)))
+                                     (catch Exception e
+                                       (clojure.stacktrace/print-stack-trace e)))))
+                         (button "disconnect"
+                                 (fn []
+                                   (bot/kill-chans))))
                                                 
                         
                         
-;;                         (rectangle rwidth rheight)
+                        (rectangle rwidth rheight)
                         
 
-;;                         (move
-;;                          0 10
-;;                          (horizontal-layout
-;;                           (button "speak."
-;;                                   (fn []
-;;                                     (put! ch (bot/chat whoo-text))
-;;                                     (println whoo-text)))
-;;                           (text-input whoo-text
-;;                                       (fn [key]
-;;                                         (let [new-text
-;;                                               (cond
-;;                                                (= :back key)
-;;                                                (subs whoo-text 0 (max 0 (dec (.length whoo-text))))
+                        (move
+                         0 10
+                         (horizontal-layout
+                          (button "speak."
+                                  (fn []
+                                    (put! ch (bot/chat whoo-text))
+                                    (println whoo-text)))
+                          (text-input whoo-text
+                                      (fn [key]
+                                        (let [new-text
+                                              (cond
+                                               (= :back key)
+                                               (subs whoo-text 0 (max 0 (dec (.length whoo-text))))
                                                
-;;                                                (string? key)
-;;                                                (str whoo-text key))]
-;;                                           (cond
-;;                                            new-text
-;;                                            (r! whoo-text new-text)
+                                               (string? key)
+                                               (str whoo-text key))]
+                                          (cond
+                                           new-text
+                                           (r! whoo-text new-text)
 
-;;                                            (= :return key)
-;;                                            (do
-;;                                              (put! ch (bot/chat whoo-text))
-;;                                              (r! whoo-text ""))))))))
-;;                         (let [w 100
-;;                               h 40
-;;                               -cid (make-cid "keys")]
-;;                          (reify
-;;                            IComponent
-;;                            (cid [this]
-;;                              -cid)
-;;                            IFocus
-;;                            IKeyPress
-;;                            (-key-press [this key]
-;;                              (when (= (cid this) *focus*)
-;;                                (let [key-map
-;;                                      {" " [0 1 0]
-;;                                       :return [0 -1 0]
-;;                                       :up [1 0 0]
-;;                                       :left [0 0 1]
-;;                                       :right [0 0 -1]
-;;                                       :down [-1 0 0]}]
-;;                                  (if-let [[ox oy oz] (get key-map key)]
-;;                                    (let [[x y z] (bot/integerize-position @bot/position)]
-;;                                      (reset! bot/path [[(+ ox x)
-;;                                                         (+ oy y)
-;;                                                         (+ oz z)]]))
-;;                                    (cond
-;;                                     (= key "d")
-;;                                     (when @bot/position
-;;                                        (let [face 0
-;;                                              [px py pz] (bot/integerize-position @bot/position)
-;;                                              [x y z] [(inc px) (dec py) pz]
-;;                                              status 2]
-;;                                          (put! ch (bot/player-digging 0 x y z 0))))
+                                           (= :return key)
+                                           (do
+                                             (put! ch (bot/chat whoo-text))
+                                             (r! whoo-text ""))))))))
+                        (let [w 100
+                              h 40
+                              -cid (make-cid "keys")]
+                         (reify
+                           IComponent
+                           (cid [this]
+                             -cid)
+                           IFocus
+                           IKeyPress
+                           (-key-press [this key]
+                             (when (= (cid this) *focus*)
+                               (let [key-map
+                                     {" " [0 1 0]
+                                      :return [0 -1 0]
+                                      :up [1 0 0]
+                                      :left [0 0 1]
+                                      :right [0 0 -1]
+                                      :down [-1 0 0]}]
+                                 (if-let [[ox oy oz] (get key-map key)]
+                                   (let [[x y z] (bot/integerize-position @bot/position)]
+                                     (reset! bot/path [[(+ ox x)
+                                                        (+ oy y)
+                                                        (+ oz z)]]))
+                                   (cond
+                                    (= key "d")
+                                    (when @bot/position
+                                       (let [face 0
+                                             [px py pz] (bot/integerize-position @bot/position)
+                                             [x y z] [(inc px) (dec py) pz]
+                                             status 2]
+                                         (put! ch (bot/player-digging 0 x y z 0))))
 
-;;                                     (= key "t")
-;;                                     (swap! bot/looking
-;;                                             (fn [looking]
-;;                                               (if looking
-;;                                                 (let [[yaw pitch] looking]
-;;                                                   [(+ 90 yaw) pitch])
-;;                                                 [0 0])))
+                                    (= key "t")
+                                    (swap! bot/looking
+                                            (fn [looking]
+                                              (if looking
+                                                (let [[yaw pitch] looking]
+                                                  [(+ 90 yaw) pitch])
+                                                [0 0])))
                                     
-;;                                     )))))
+                                    )))))
                            
-;;                            IBounds
-;;                            (-bounds [_]
-;;                              [w h])
+                           IBounds
+                           (-bounds [_]
+                             [w h])
 
-;;                            IDraw
-;;                            (draw [this state]
-;;                              (let [focus? (= (cid this) *focus*)]
-;;                                (draw (if focus?
-;;                                        (filled-rectangle [1 0 1] w h)
-;;                                        (rectangle w h))
-;;                                      state)))))
-;;                         (button "Come"
-;;                                 (fn []
-;;                                   (bot/try-move-to-player ch)))
-;;                         (button "tp to me"
-;;                                 (fn []
-;;                                   (put! ch (bot/chat "/tp treehugger1234 phronmophobic"))))
-;;                         (button "respawn"
-;;                                 (fn []
-;;                                   (put! ch (bot/respawn))))
-;;                         (horizontal-layout
-;;                          (button "creative mode"
-;;                                  (fn []
-;;                                    (put! ch (bot/chat "/gamemode creative"))))
-;;                          (button "adventure mode"
-;;                                  (fn []
-;;                                    (put! ch (bot/chat "/gamemode adventure"))))
-;;                          (button "survival mode"
-;;                                  (fn []
-;;                                    (put! ch (bot/chat "/gamemode survival")))))
-;;                         (button "make it day"
-;;                                 (fn []
-;;                                   (put! ch (bot/chat "/time set day"))))
-;;                         (button "toggle rain"
-;;                                 (fn []
-;;                                   (put! ch (bot/chat "/toggledownfall"))))
-;;                         (horizontal-layout
-;;                          (button "command")
-;;                          (text-input whoo-text))
-;;                         )
-;;                        )
+                           IDraw
+                           (draw [this state]
+                             (let [focus? (= (cid this) *focus*)]
+                               (draw (if focus?
+                                       (filled-rectangle [1 0 1] w h)
+                                       (rectangle w h))
+                                     state)))))
+                        (button "Come"
+                                (fn []
+                                  (bot/try-move-to-player ch)))
+                        (button "tp to me"
+                                (fn []
+                                  (put! ch (bot/chat "/tp treehugger1234 phronmophobic"))))
+                        (button "respawn"
+                                (fn []
+                                  (put! ch (bot/respawn))))
+                        (horizontal-layout
+                         (button "creative mode"
+                                 (fn []
+                                   (put! ch (bot/chat "/gamemode creative"))))
+                         (button "adventure mode"
+                                 (fn []
+                                   (put! ch (bot/chat "/gamemode adventure"))))
+                         (button "survival mode"
+                                 (fn []
+                                   (put! ch (bot/chat "/gamemode survival")))))
+                        (button "make it day"
+                                (fn []
+                                  (put! ch (bot/chat "/time set day"))))
+                        (button "toggle rain"
+                                (fn []
+                                  (put! ch (bot/chat "/toggledownfall"))))
+                        (button "swing arm"
+                                (fn []
+                                  (put! ch (bot/animation @bot/player-id 1))))
+                        
+                        (horizontal-layout
+                         (button "command")
+                         (text-input whoo-text))
+                        )
+                       )
 
-;;                  (move 0 10
-;;                        (label status)))])
+                 (move 0 10
+                       (label status)))])
 
 
 

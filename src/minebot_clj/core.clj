@@ -440,6 +440,11 @@
   0x01
   :message :string msg)
 
+(defpacket animation
+  0x0A
+  :entity-id :int entity-id
+  :animation :unsigned-byte animation)
+
 (defpacket keep-alive
   0x00
   :keep-alive-id :int keep-alive-id)
@@ -724,7 +729,7 @@
 (declare track-entities)
 (declare follow-players)
 (declare follow-ui-commands)
-(declare players entities world)
+(declare players entities world player-id)
 (def all-chans (atom []))
 (defn kill-chans []
   (doseq [ch @all-chans]
@@ -750,6 +755,7 @@
        (reset! position nil)
        (reset! players #{})
        (reset! entities {})
+       (reset! player-id nil)
        (send world (constantly (model/->World {})))
        (await world)
        (socket-chan host port inchan outchan)
@@ -773,6 +779,28 @@
        (do-position-update (async/tap mult (chan)) outchan position looking path)
        (update-world (async/tap mult (chan)) world client-packets)
        (track-entities (async/tap mult (chan 10)))
+       (let [ch (async/tap mult (chan))]
+         (goe
+          (loop []
+            (when-let [packet (<! ch)]
+              (debug packet)
+              (recur)))))
+       (let [ch (chan (async/dropping-buffer 10))]
+         (async/tap mult ch)
+         (goe
+          (loop []
+            (when-let [packet (<! ch)]
+              (if (= 0x01 (:packet-id packet))
+                (let [packet-description (first
+                                          (filter (fn [[pname _ _ _]]
+                                                    (= pname :join-game))
+                                                  (get client-packets 0x01)))
+                      join-game-packet (parse-packet packet-description 
+                                                     packet)]
+                  (when-let [entity-id (:entity-id join-game-packet)]
+                    (reset! player-id entity-id)))
+                (recur))))
+          (async/untap mult ch)))
        #_(follow-ui-commands (async/tap mult (chan 10)) outchan)
        #_(follow-players (async/tap mult (chan 10)) outchan)
 
@@ -939,6 +967,7 @@
   (* (int n)
      32))
 (def players (atom #{}))
+(def player-id (atom nil))
 (def entities (atom {}))
 (defn track-entities [ch]
   (goe
@@ -1189,7 +1218,7 @@
       (finally
         (.close server-socket)))))
 
-
+(defn debug [packet])
 
 (defn packet-chan [socket inchan outchan]
   (let [in (DataInputStream. (.getInputStream socket))
