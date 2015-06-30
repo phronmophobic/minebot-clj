@@ -728,37 +728,80 @@
 (defn button [text & [on-click on-hover hover?]]
   (Button. (make-cid "button") text on-click))
 
+(defn wrap-text [text n]
+  (loop [[k & text] text
+         i 0
+         line []
+         lines []]
+    (cond
+     (nil? k)
+     (map #(apply str %) (conj lines line))
+
+     (= k \newline)
+     (recur text 0 [] (conj lines line))
+
+     (= i (dec n))
+     (recur text 0 [] (conj lines (conj line k)))
+
+     :else
+     (recur text (inc i) (conj line k) lines)))
+
+)
+
 (declare vertical-layout horizontal-layout)
-(defn text-input-components [text focus?]
-  (let [text (if (instance? clojure.lang.IDeref text)
+
+(defn text-input-components [input focus?]
+  (let [{:keys [text width height cursor]} input
+        text (if (instance? clojure.lang.IDeref text)
                @text
                text)
         text (if-not (string? text)
                (str text)
                text)
-        tlabel (label text)
-        [tw th] (bounds tlabel)
+        [cw ch] (bounds (label "." :font "Monospaced"))
         padding 10
-        lines (clojure.string/split text #"\n")
+        wrap-n (int (/ (- width (* 2 padding))
+                       cw))
+        lines (wrap-text text wrap-n)
         labels (apply
                 vertical-layout
                 (for [line lines]
-                  (label line)))
+                  (label line :font "Monospaced")))
+        cursor-rect (rectangle cw ch)
+        [cursor-x cursor-y]
+        (loop [x 0
+               y 0
+               cursor cursor
+               [key & text] (seq text)
+               ]
+          (cond
+
+           (zero? cursor)
+           [x y]
+
+           (> x wrap-n)
+           (recur 0 (inc y) cursor text)
+
+           (= key \newline)
+           (recur 0 (inc y) (dec cursor) text)
+
+           :else
+           (recur (inc x) y (dec cursor) text)))
         content
         (vertical-layout
          (spacer 0 padding)
-         (horizontal-layout (spacer padding 0) labels (spacer padding 0))
+         (horizontal-layout (spacer padding 0)
+                            [(move (* cursor-x cw) (* cursor-y ch)
+                                   cursor-rect)
+                             labels]
+                            (spacer padding 0))
          (spacer 0 padding))
-        [content-width content-height] (bounds content)
-        border (if focus?
-                 (filled-rectangle [1 0 1]
-                                   content-width
-                                   content-height)
-                 (rectangle content-width
-                          content-height))]
+        border (rectangle width
+                          height)]
     [border
      content]))
-(defcomponent TextInput [text on-key]
+
+(defcomponent TextInput [text on-key width height cursor]
   IFocus
 
   IKeyPress
@@ -768,8 +811,8 @@
       (on-key key)))
 
   IBounds
-  (-bounds [_]
-    (let [comps (text-input-components text nil)
+  (-bounds [this]
+    (let [comps (text-input-components this false)
           [ox oy] (origin comps)
           [w h] (bounds comps)]
       [(+ ox w)
@@ -778,10 +821,67 @@
   IDraw
   (draw [this state]
     (let [focus? (= (cid this) *focus*)]
-      (draw (text-input-components text focus?)
+      (draw (text-input-components this focus?)
             state))))
-(defn text-input [initial-text & [on-key]]
-  (TextInput. (make-cid "textinput") initial-text on-key))
+(defn text-input [initial-text & [on-key cursor]]
+  (->TextInput (make-cid "textinput") initial-text on-key 300 300 (or cursor 0) ))
+
+;; test text input
+;; (defr testtext ".adsf")
+;; (defr testcursor 0)
+;; (defr components
+;;   [(text-input testtext ~(text-key-handler 'testtext 'testcursor) testcursor)])
+;; (defr event-handlers (make-event-handlers components))
+
+
+(defn text-key-handler
+  ([textsym cursorsym]
+   (text-key-handler (env/get-or-create-renv) textsym cursorsym))
+  ([renv textsym cursorsym]
+   (fn [key]
+     (dosync
+      (let [old-cursor (env/get-renv-value renv cursorsym)
+            old-text (env/get-renv-value renv textsym)
+
+            [cursor text]
+            (cond
+             (= :back key)
+             [(dec old-cursor)
+              (str
+               (when (pos? old-cursor)
+                 (subs old-text 0 (dec old-cursor)))
+               (subs old-text old-cursor (.length old-text)))]
+
+             (= :return key)
+             [old-cursor
+              (str
+               (subs old-text 0 old-cursor)
+               "\n"
+               (subs old-text old-cursor (.length old-text)))
+              ]
+             
+             (string? key)
+             [(inc old-cursor)
+              (str
+               (subs old-text 0 old-cursor)
+               key
+               (subs old-text old-cursor (.length old-text)))]
+
+             (= :left key)
+             [(dec old-cursor)
+              old-text]
+
+             (= :right key)
+             [(inc old-cursor)
+              old-text]
+
+             :else
+             [old-cursor
+              old-text])
+            cursor (max 0 cursor)
+            cursor (min (count text) cursor)]
+        (env/set-value renv textsym text {})
+        (env/set-value renv cursorsym cursor {}))))))
 
 (defn key-handler
   ([sym]
