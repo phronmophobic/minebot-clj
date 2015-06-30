@@ -1151,53 +1151,9 @@
 (defn remove-nth [v i]
   (vec (concat (take i v) (drop (inc i) v))))
 
-;; (defr movements
-;;   [:up
-;;    :down
-;;    :right
-;;    :right
-;;    :right
-;;    :right
-;;    :up])
-;; (defr movelength 20)
-;; (defr proposed-segment nil)
-;; #_(r! components
-;;     (move 100 100
-;;           (reify
-;;             IComponent
-;;             IMouseMove
-;;             (-mouse-move [this [mx my]])
-;;             IKeyPress
-;;             (-key-press [this key]
-;;               (let [v (conj movements key)]
-;;                 (r! movements v)))
 
-;;             IDraw
-;;             (draw [this state]
-;;               (push-matrix
-;;                (doseq [movement movements]
-;;                  (case movement
-;;                    :up
-;;                    (do
-;;                      (draw (path [0 0] [0 (- movelength)])
-;;                            state)
-;;                      (translate 0 (- movelength)))
-;;                    :down
-;;                    (do
-;;                      (draw (path [0 0] [0 movelength])
-;;                            state)
-;;                      (translate 0 movelength))
 
-;;                    :right
-;;                    (do
-;;                      (draw (path [0 0] [movelength 0])
-;;                            state)
-;;                      (translate movelength 0))
-;;                    :left
-;;                    (do
-;;                      (draw (path [0 0] [(- movelength) 0])
-;;                            state)
-;;                      (translate (- movelength) 0))
-                   
-                   
-;;                    nil)))))))
+
+
+
+
