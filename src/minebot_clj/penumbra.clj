@@ -33,11 +33,18 @@
 (defn update-state [state]
   state)
 
+(declare run-key-repeater)
 (defn init [state]
   (render-mode :wireframe)
   ;; (app/periodic-update! 30  #'update-state )
   (app/vsync! true)
-  state)
+  
+  (assoc state
+    :key-repeater (run-key-repeater
+                   (let [myapp (app/app)]
+                     (fn [key]
+                       (event/publish! myapp :key-press key)
+                       )))))
 
 (defn reshape [[x y width height] state]
 ;;  (frustum-view 60.0 (/ (double width) height) 1.0 100.0)
@@ -83,7 +90,8 @@
  :mouse-up
  :mouse-click
  :mouse-wheel
- :key-press)
+ :key-press
+ :key-type)
 
 (defprotocol IFocus)
 
@@ -538,7 +546,9 @@
 
 
 (defn close [state]
-  "Called once, when application ends.")
+  "Called once, when application ends."
+  (when-let [kill-ch (-> state :key-repeater :kill-ch)]
+    (close! kill-ch)))
 
 (defn mouse-drag [[dx dy] [mx my] button state]
   "Called when mouse moves with a button pressed. [dx dy] contains relative motion since last time :mouse-drag was called, and [x y] contains absolute position of the mouse. button will be equal to one of :left, :right, :center, :mouse-4, or :mouse-5. If the mouse is moving when two or more buttons are pressed, :mouse-drag will be called once for each button."
@@ -606,21 +616,78 @@
   state)
 
 (declare whoo-text event-handlers)
+
+
+
+
+(defn key-repeat-loop [k send-key]
+  (let [kill-ch (chan)]
+    (go
+      (loop [delay 100
+             n 0]
+        (when (< n 100)
+          (let [timeout-ch (timeout delay)
+                [val port] (alts! [kill-ch timeout-ch])]
+            (when (= port timeout-ch)
+              (do
+                (send-key k)
+                (recur 50 (inc n))))))))
+    kill-ch))
+
+(defn run-key-repeater [send-key]
+  (let [kill-ch (chan)
+        key-up-ch (chan)
+        key-down-ch (chan)]
+    (go
+      (try
+       (loop [keys-in-flight {}]
+         (let [[val port] (alts! [key-up-ch key-down-ch kill-ch])]
+           (when-let [repeat-loop (get keys-in-flight val)]
+             (close! repeat-loop))           
+
+           (cond
+            (= port key-down-ch)
+            (recur (assoc keys-in-flight val (key-repeat-loop val send-key)))
+
+            (= port key-up-ch)
+            (recur (dissoc keys-in-flight val))
+
+
+            (= port kill-ch)
+            (do
+              (println "key repeater donw")
+              (doseq [repeat-loop (vals keys-in-flight)]
+                (close! repeat-loop)))))
+
+         )
+       (catch Exception e
+         (println e)))
+      (println "kill key repeater"))
+    {:kill-ch kill-ch
+     :key-up-ch key-up-ch
+     :key-down-ch key-down-ch}))
+
 (defn key-press [key state]
   "Called whenever a key is pressed. If the key is something that would normally show up in a text entry field, key is a case-sensitive string. Examples include “a”, “&”, and " ". If it is not, key is a keyword. Examples include :left, :control, and :escape"
   (with-event-bindings
     (doseq [handler (-> *event-handlers* :key-press)]
       (-key-press handler key)))
+  
+  (async/put! (-> state :key-repeater :key-down-ch) key)
   state)
 
 
 (defn key-release [key state]
   "Called whenever a key is released."
+  (async/put! (-> state :key-repeater :key-up-ch) key)  
   state)
 
 
 (defn key-type [key state]
   "Called whenever a key is pressed and released. This is the only key event which will expose auto-repeated keys."
+  (with-event-bindings
+    (doseq [handler (-> *event-handlers* :key-type)]
+      (-key-type handler key)))
   state)
 
 (defonce current-app (atom nil))
@@ -1130,7 +1197,7 @@
            (mapcat find-event-handlers (children comp))
            (keep #(when (satisfies? % comp)
                     [(event-interface-key %) comp])
-                 [IKeyPress IMouseMove IMouseDown IMouseWheel IMouseDrag IMouseUp]))))
+                 [IKeyPress IMouseMove IMouseDown IMouseWheel IMouseDrag IMouseUp IKeyType]))))
 
 (defn make-event-handlers [comp]
   (->> (find-event-handlers comp)
