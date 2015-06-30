@@ -10,6 +10,13 @@
   [(nth obj i) (conj path [:nth obj i])])
 
 
+(defn zfn [[obj path] type f & args]
+  [(apply f obj args) (conj path (apply vector type obj args))])
+
+(defmacro zdo [zobj f & args]
+  `(zfn ~zobj (keyword (quote ~f)) ~f ~@args))
+
+
 (defmulti back (fn [type & args]
                  type))
 
@@ -173,8 +180,9 @@
     (reduce
      (fn [obj [type _ & args :as sub-path]]
        (when obj
-         (vary-meta (apply forward type obj args)
-                    assoc :path (conj (-> obj meta :path) (apply vector type obj args)))))
+         (when-let [new-obj (apply forward type obj args)]
+           (vary-meta new-obj
+                      assoc :path (conj (-> obj meta :path) (apply vector type obj args))))))
      (vary-meta obj dissoc :path)
      (reverse path))))
 
