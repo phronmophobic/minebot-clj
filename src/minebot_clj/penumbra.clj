@@ -268,6 +268,17 @@
 
 
 (defcomponent Group [drawables]
+  IBounds
+  (-bounds [this]
+    (reduce
+     (fn [[max-width max-height] elem]
+       (let [[ox oy] (origin elem)
+             [w h] (bounds elem)]
+         [(max max-width (+ ox w))
+          (max max-height (+ oy h))]))
+     [0 0]
+     drawables))
+
   IDraw
   (draw [this state]
     (doseq [drawable drawables]
