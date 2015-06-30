@@ -842,6 +842,9 @@
      (dosync
       (let [old-cursor (env/get-renv-value renv cursorsym)
             old-text (env/get-renv-value renv textsym)
+            key (if (= :return key)
+                  "\n"
+                  key)
 
             [cursor text]
             (cond
@@ -852,14 +855,6 @@
                  (subs old-text 0 (dec old-cursor)))
                (subs old-text old-cursor (.length old-text)))]
 
-             (= :return key)
-             [old-cursor
-              (str
-               (subs old-text 0 old-cursor)
-               "\n"
-               (subs old-text old-cursor (.length old-text)))
-              ]
-             
              (string? key)
              [(inc old-cursor)
               (str
