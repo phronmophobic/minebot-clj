@@ -363,6 +363,12 @@
   [field-type data]
   (not (zero? (.readByte data))))
 
+(defmethod parse-field :array-of-int
+  [field-type data]
+  (let [length (parse-field :byte data)]
+    (repeatedly length (fn []
+                         (parse-field :int data)))))
+
 (declare client-packets)
 (defn packet-name
   ([packet]
@@ -511,23 +517,31 @@
   (-write-field out :bytearray (byte-array data)))
 
 
+(defn fix-packet-description [[pname direction pid pdesc :as original]]
+  (case pname
+    :destroy-entities
+    [pname direction pid
+     '([:entity-ids :array-of-int "The list of entities of destroy"])]
 
-(defonce cget-packets (memoize protocol/get-packets))
+    original))
+(defonce cget-packets
+  (memoize (fn []
+             (map fix-packet-description (protocol/get-packets)))))
 (def all-packets (reduce
-              (fn [xs x]
-                (update-in xs [(nth x 2)] conj x))
-              {}
-              (cget-packets)))
+                  (fn [xs x]
+                    (update-in xs [(nth x 2)] conj x))
+                  {}
+                  (cget-packets)))
 (def client-packets (reduce
-              (fn [xs x]
-                (update-in xs [(nth x 2)] conj x))
-              {}
-              (filter #(= :clientbound (second %)) (cget-packets))))
+                     (fn [xs x]
+                       (update-in xs [(nth x 2)] conj x))
+                     {}
+                     (filter #(= :clientbound (second %)) (cget-packets))))
 (def server-packets (reduce
-              (fn [xs x]
-                (update-in xs [(nth x 2)] conj x))
-              {}
-              (filter #(= :serverbound (second %)) (cget-packets))))
+                     (fn [xs x]
+                       (update-in xs [(nth x 2)] conj x))
+                     {}
+                     (filter #(= :serverbound (second %)) (cget-packets))))
 
 
 (defpacket place-block
@@ -631,6 +645,7 @@
          (recur))))
    (msg "stopping keep alive")))
 
+(declare world)
 (defn do-position-update [inchan outchan position looking path]
   (let [running (atom true)]
     (goe
@@ -654,11 +669,13 @@
            (when-let [[x y z] (first @path)]
              (reset! position [(+ x 0.5) y (+ z 0.5)])
              (swap! path rest))
-           (let [[x y z] @position]
+           (let [[x y z] @position
+                 on-ground? (pos?
+                             (get @world [:block-data [x (dec y) z]] 0))]
              (if @looking
                (let [[yaw pitch] @looking]
-                 (>! outchan (position-look x y (+ y 1.62) z yaw pitch true)))
-               (>! outchan (player-position x y (+ y 1.62) z true))))
+                 (>! outchan (position-look x y (+ y 1.62) z yaw pitch on-ground?)))
+               (>! outchan (player-position x y (+ y 1.62) z on-ground?))))
            (>! outchan (player true))
            (<! (timeout 50)))
          (recur)))
@@ -684,14 +701,40 @@
          :when (pos? (get-block!  [x (dec y) z]))]
      [x y z])))
 
+(defn minecraft-successors2 [chunks [x y z]]
+  (letfn [(get-block! [pos]
+            (let [block (get chunks [:block-data pos] 0)]
+              (when (= -1 block)
+                (throw (Exception. (str "Hit area with no block " pos))))
+              block))]
+    (for [dx (range -2 3)
+          dy (range -2 3)
+          dz (range -2 3)
+          :let [[x y z] [(+ x dx)
+                         (+ y dy)
+                         (+ z dz)]]
+          :when (not (= 0 dx dy dz))
+          :when (zero? (get-block! [x y z]))
+          :when (zero? (get-block! [x (inc y) z]))]
+      [x y z])))
+
 (defn minestar [chunks start goal]
   (let [[sx sy sz] start]
     (astar start
            #(let [d (manhattan-distance % goal)]
-              (if (< d 4)
+              (if (< d 2)
                 0
                 d))
            (partial minecraft-successors chunks))))
+
+(defn minestar2 [chunks start goal]
+  (let [[sx sy sz] start]
+    (astar start
+           #(let [d (manhattan-distance % goal)]
+              (if (< d 2)
+                0
+                d))
+           (partial minecraft-successors2 chunks))))
 
 
 (defn vdotproduct [a b]
@@ -736,6 +779,7 @@
     (close! ch))
   (reset! all-chans []))
 
+(declare debug)
 ;; digital ocean
 (defn do-something
   ([] (let [[host port] (protocol/discover-minecraft-server)]
@@ -990,7 +1034,16 @@
                         :current-item current-item
                         :player-name player-name
                         :player-uuid player-uuid))))
-           
+
+           :entity-status
+           (let [{:keys [entity-id entity-status]} (parse-packet packet)]
+             (when (= 3 entity-status)
+               (swap! entities dissoc entity-id)))
+
+           :destroy-entities
+           (let [{:keys [entity-ids]} (parse-packet packet)]
+             (swap! entities (fn [entities]
+                               (reduce dissoc entities entity-ids))))
 
            (:spawn-object :spawn-mob)
            (let [{:keys [entity-id type x y z]} (parse-packet packet)]
@@ -1218,7 +1271,9 @@
       (finally
         (.close server-socket)))))
 
-(defn debug [packet])
+(defn debug [packet]
+  #_(when (= (:packet-id packet) 0x13)
+    (msg (parse-packet packet))))
 
 (defn packet-chan [socket inchan outchan]
   (let [in (DataInputStream. (.getInputStream socket))
@@ -1802,6 +1857,91 @@ foo.speak(\"starting...\")
   (show-web-ui :minebot11
                  html))
 #_(defr minebot-ui nil)
+
+
+
+(defmacro while-let
+  "Repeatedly executes body while test expression is true, evaluating the body with binding-form bound to the value of test."
+  [bindings & body]
+  (let [form (first bindings) test (second bindings)]
+    `(loop [~form ~test]
+       (when ~form
+         ~@body
+         (recur ~test)))))
+
+(defn closest-entity [entities [x1 y1 z1]]
+  (first
+   (sort-by (fn [[entity-id entity]]
+              (let [[x2 y2 z2] ((juxt :x :y :z) entity)]
+                (+ (java.lang.Math/abs (- x1 x2))
+                   (* 10 (java.lang.Math/abs (- y1 y2)))
+                   (java.lang.Math/abs (- z1 z2))
+                 )))
+            entities)))
+
+(defn can-attack? [entity]
+  (< (manhattan-distance @position ((juxt :x :y :z) entity))
+     5))
+
+(defn goto-pos [pos]
+  (goe
+    (let [pos (integerize-position ((juxt :x :y :z) pos))]
+      (if-let [new-path (try
+                          (minestar @world (integerize-position @position) pos)
+                          (catch Exception e
+                            (msg e)
+                            nil))]
+        (reset! path new-path)
+        (do
+          
+          (if-let [new-path (try
+                              (minestar2 @world (integerize-position @position) pos)
+                              (catch Exception e
+                                (msg e)
+                                nil))]
+            (reset! path new-path)
+            (put! (last @all-chans) (chat  "no path found!"))))))))
+
+(defn goto-entity [entity-id]
+  (go
+    (while (not (can-attack? (get @entities entity-id)))
+      (msg "going towards " (select-keys (get @entities entity-id) [:x :y :z]))
+      (<! (goto-pos (select-keys (get @entities entity-id) [:x :y :z])))
+      (when (not (can-attack? (get @entities entity-id)))
+        (<! (timeout 1000)))
+      )))
+
+(defn go-kill-entity [entity-id]
+  (goe
+   (loop []
+      (when-let [entity (get @entities entity-id)]
+        (msg "can attack? " (can-attack? entity))
+        (if (can-attack? entity)
+          (do
+            (>! (last @all-chans) (animation @player-id 1))
+            (>! (last @all-chans) (use-entity entity-id 1))
+            (<! (timeout 1000)))
+          (<! (goto-entity entity-id)))
+        (recur)))))
+
+(defn attack-entity
+  ([]
+   (attack-entity #{52 91 90 54 51 50 55 92 93 }))
+  ([entity-id-filter]
+   (goe
+    (when (seq @entities)
+      (let [[entity-id entity] (closest-entity
+                                (->> (reduce #(dissoc %1 %2) @entities @players)
+                                     (filter #(entity-id-filter (:type (second %))))
+                                     (into {}))
+                                @position)]
+        (msg "going to kill " entity-id)
+        (<! (go-kill-entity entity-id)))))))
+
+
+
+
+
 
 
 
