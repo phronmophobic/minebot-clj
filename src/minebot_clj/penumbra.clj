@@ -1135,7 +1135,7 @@
            (mapcat find-event-handlers (children comp))
            (keep #(when (satisfies? % comp)
                     [(event-interface-key %) comp])
-                 [IKeyPress IMouseMove IMouseDown IMouseWheel]))))
+                 [IKeyPress IMouseMove IMouseDown IMouseWheel IMouseDrag IMouseUp]))))
 
 (defn make-event-handlers [comp]
   (->> (find-event-handlers comp)
