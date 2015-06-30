@@ -160,7 +160,6 @@
               [form# '(+ 1 2 3)
                cell-name# "abc"
                val-str# (str "dunno")
-               test# (println "hi")
                elem# (move
                       mx my
                       (horizontal-layout
@@ -169,9 +168,9 @@
                        (label val-str#)))]
               (env/set-form-and-deps
                myenv 'val-str# 
-               (->ClojureEvaluable *ns* `(when-let [~'cell-name (env/get-renv-value myenv 'cell-name#)]
-                                           (str (env/get-renv-value myenv
-                                                                    (symbol ~'cell-name)))) {})
+               (->ClojureEvaluable *ns* '(when-let [cname (env/get-renv-value minebot-clj.modicum/myenv 'cell-name#)]
+                                           (str (env/get-renv-value minebot-clj.modicum/myenv
+                                                                    (symbol cname)))) {})
                #{'cell-name# 'form#})
               (rv! cell-add? false)
               (ru! cells conj (env/get-renv-ref myenv 'elem#)))))
