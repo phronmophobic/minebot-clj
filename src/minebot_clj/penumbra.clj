@@ -540,8 +540,11 @@
 (defn close [state]
   "Called once, when application ends.")
 
-(defn mouse-drag [[dx dy] [x y] button state]
+(defn mouse-drag [[dx dy] [mx my] button state]
   "Called when mouse moves with a button pressed. [dx dy] contains relative motion since last time :mouse-drag was called, and [x y] contains absolute position of the mouse. button will be equal to one of :left, :right, :center, :mouse-4, or :mouse-5. If the mouse is moving when two or more buttons are pressed, :mouse-drag will be called once for each button."
+  (with-event-bindings
+      (doseq [handler (-> *event-handlers* :mouse-drag)]
+        (-mouse-drag handler [mx my])))
   state)
 
 (defn mouse-wheel [dwheel state]
