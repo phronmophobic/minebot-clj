@@ -772,15 +772,15 @@
         (loop [x 0
                y 0
                cursor cursor
-               [key & text] (seq text)
+               [key & text :as all-text] (seq text)
                ]
           (cond
 
-           (zero? cursor)
+           (<= cursor 0)
            [x y]
 
-           (> x wrap-n)
-           (recur 0 (inc y) cursor text)
+           (>= x wrap-n)
+           (recur 0 (inc y) cursor all-text)
 
            (= key \newline)
            (recur 0 (inc y) (dec cursor) text)
