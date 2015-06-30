@@ -823,8 +823,8 @@
     (let [focus? (= (cid this) *focus*)]
       (draw (text-input-components this focus?)
             state))))
-(defn text-input [initial-text & [on-key cursor]]
-  (->TextInput (make-cid "textinput") initial-text on-key 300 300 (or cursor 0) ))
+(defn text-input [initial-text & [on-key cursor width height]]
+  (->TextInput (make-cid "textinput") initial-text on-key (or width 300) (or height 300) (or cursor 0) ))
 
 ;; test text input
 ;; (defr testtext ".adsf")
