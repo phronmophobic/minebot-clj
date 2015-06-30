@@ -903,13 +903,19 @@
             new-text
             old-text)))))))
 
-(defn vertical-layout [elem & more]
-  (if more
-    (let [[_ dy] (bounds elem)
-          [_ oy] (origin elem)]
-      [elem (move 0 (+ oy dy 1)
-                  (apply vertical-layout more))])
-    elem))
+(defn vertical-layout [& elems]
+  (loop [[elem & more :as elems] elems
+         offset-y 0
+         group-elems []]
+    (if (seq elems)
+      (let [[_ dy] (bounds elem)
+            [_ oy] (origin elem)]
+        (recur more (+ offset-y oy dy 1) (conj group-elems
+                                               (move 0 offset-y
+                                                     elem))))
+      (when (seq group-elems)
+          (apply group group-elems)))))
+
 (defn horizontal-layout [elem & more]
   (if more
     (let [[dx _] (bounds elem)
