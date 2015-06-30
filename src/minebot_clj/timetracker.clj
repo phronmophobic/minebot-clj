@@ -83,7 +83,7 @@
 
 
 
-(defcomponent CalendarButton [num bounds on-click]
+(defcomponent CalendarButton [num current? bounds on-click]
   IBounds
   (-bounds [_]
     bounds)
@@ -106,19 +106,26 @@
           border (rectangle w h)
           {:keys [mx my]}  state
           [gx gy _] pen/*origin*]
-      (when (and mx my
-                 (>= mx gx)
-                 (>= my gy)
-                 (< mx (+ gx w))
-                 (< my (+ gy h)))
-        (penumbra.opengl/color [1 0 1]))
+      (cond
+
+       (and mx my
+            (>= mx gx)
+            (>= my gy)
+            (< mx (+ gx w))
+            (< my (+ gy h)))
+       (penumbra.opengl/color [1 0 1])
+
+       current?
+       (penumbra.opengl/color [0 0 1])
+       
+       )
       (draw
        [border
         (center (label (str num)) [w h])]
        state))))
 
 
-(defn calendar [gcal on-click]
+(defn calendar [gcal current-gcal on-click]
   (let [width 301
         header-border (rectangle width 30)
         days-in-month (.getActualMaximum gcal (java.util.Calendar/DAY_OF_MONTH))
@@ -138,10 +145,17 @@
          (for [j (range 7)
                :let [num (inc
                           (- (+ (* 7 i) j)
-                             first-day-offset))]]
+                             first-day-offset))
+                     current? (and (= (.get current-gcal java.util.Calendar/YEAR)
+                                      (.get gcal java.util.Calendar/YEAR))
+                                   (= (.get current-gcal java.util.Calendar/MONTH)
+                                      (.get gcal java.util.Calendar/MONTH))
+                                   (= (.get current-gcal java.util.Calendar/DAY_OF_MONTH)
+                                      num))]]
            (if (and (>= num 1)
                     (<= num days-in-month))
              (->CalendarButton (make-cid "calendar_button") num
+                               current?
                                [42 42]
                                (fn []
                                  (when on-click
@@ -286,8 +300,8 @@
 (defn time-str [[dt type]]
   (if (#{:start :stop} type)
     (let [[hour min] dt
-          am? (<= hour 12)
-          normal-hour (if (not am?)
+          am? (< hour 12)
+          normal-hour (if (> hour 12)
                         (- hour 12)
                         hour)
           time-str (str normal-hour ":" (format "%02d" min) (if am? "am" "pm"))]
@@ -323,7 +337,8 @@
          )
    (move 290 120 (calendar (doto (java.util.GregorianCalendar.)
                              (.add  java.util.Calendar/MONTH month-offset))
-                           (fn [day]
+                           current-date
+                           ~(fn [day]
                              (rv! current-date (doto (.clone @current-date)
                                                  (.set java.util.Calendar/MONTH
                                                         (.get (doto (java.util.GregorianCalendar.)
@@ -564,12 +579,12 @@
               :cell-border true}]
      (concat
       (for [[dt description hours] work-description]
-        [dt description (str hours) (format-money (* rate hours))])
+        [dt description (format "%.2f" hours) (format-money (* rate hours))])
       (list
        (let [hours-sum (apply +
                               (map #(nth % 2) work-description))]
          [[:cell [:phrase {:style :bold} "Total"]]
-          "" (str hours-sum) (format-money (* (-> env :invoice :rate) hours-sum))]))
+          "" (format "%.2f" hours-sum) (format-money (* (-> env :invoice :rate) hours-sum))]))
       )
      
      )
