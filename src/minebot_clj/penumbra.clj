@@ -636,14 +636,14 @@
 
 (defn run-key-repeater [send-key]
   (let [kill-ch (chan)
-        key-up-ch (chan)
-        key-down-ch (chan)]
+        key-up-ch (chan 20)
+        key-down-ch (chan 20)]
     (go
       (try
        (loop [keys-in-flight {}]
          (let [[val port] (alts! [key-up-ch key-down-ch kill-ch])]
-           (when-let [repeat-loop (get keys-in-flight val)]
-             (close! repeat-loop))           
+           (doseq [repeat-loop (vals keys-in-flight)]
+                (close! repeat-loop))
 
            (cond
             (= port key-down-ch)
@@ -679,7 +679,8 @@
 
 (defn key-release [key state]
   "Called whenever a key is released."
-  (async/put! (-> state :key-repeater :key-up-ch) key)  
+  (when key
+    (async/put! (-> state :key-repeater :key-up-ch) key))  
   state)
 
 
