@@ -818,7 +818,63 @@
 
 (declare vertical-layout horizontal-layout)
 
-(defn text-input-components [input focus?]
+(declare vertical-layout horizontal-layout)
+(defn text-input-components [text focus?]
+  (let [text (if (instance? clojure.lang.IDeref text)
+               @text
+               text)
+        text (if-not (string? text)
+               (str text)
+               text)
+        tlabel (label text)
+        [tw th] (bounds tlabel)
+        padding 10
+        lines (clojure.string/split text #"\n")
+        labels (apply
+                vertical-layout
+                (for [line lines]
+                  (label line)))
+        content
+        (vertical-layout
+         (spacer 0 padding)
+         (horizontal-layout (spacer padding 0) labels (spacer padding 0))
+         (spacer 0 padding))
+        [content-width content-height] (bounds content)
+        border (if focus?
+                 (filled-rectangle [1 0 1]
+                                   content-width
+                                   content-height)
+                 (rectangle content-width
+                          content-height))]
+    [border
+     content]))
+(defcomponent TextInput [text on-key]
+  IFocus
+
+  IKeyPress
+  (-key-press [this key]
+    (when (and on-key
+               (= (cid this) *focus*))
+      (on-key key)))
+
+  IBounds
+  (-bounds [_]
+    (let [comps (text-input-components text nil)
+          [ox oy] (origin comps)
+          [w h] (bounds comps)]
+      [(+ ox w)
+       (+ oy h)]))
+
+  IDraw
+  (draw [this state]
+    (let [focus? (= (cid this) *focus*)]
+      (draw (text-input-components text focus?)
+            state))))
+(defn text-input [initial-text & [on-key]]
+  (TextInput. (make-cid "textinput") initial-text on-key))
+
+
+(defn text-area-components [input focus?]
   (let [{:keys [text width height cursor]} input
         text (if (instance? clojure.lang.IDeref text)
                @text
@@ -869,7 +925,7 @@
     [border
      content]))
 
-(defcomponent TextInput [text on-key width height cursor]
+(defcomponent TextArea [text on-key width height cursor]
   IFocus
 
   IKeyPress
@@ -880,7 +936,7 @@
 
   IBounds
   (-bounds [this]
-    (let [comps (text-input-components this false)
+    (let [comps (text-area-components this false)
           [ox oy] (origin comps)
           [w h] (bounds comps)]
       [(+ ox w)
@@ -889,16 +945,19 @@
   IDraw
   (draw [this state]
     (let [focus? (= (cid this) *focus*)]
-      (draw (text-input-components this focus?)
+      (draw (text-area-components this focus?)
             state))))
-(defn text-input [initial-text & [on-key cursor width height]]
-  (->TextInput (make-cid "textinput") initial-text on-key (or width 300) (or height 300) (or cursor 0) ))
+(defn text-area [initial-text & [on-key cursor width height]]
+  (->TextArea (make-cid "textinput") initial-text on-key (or width 300) (or height 300) (or cursor 0) ))
 
 ;; test text input
 ;; (defr testtext ".adsf")
 ;; (defr testcursor 0)
+;; (defr testtext2 "adsf")
 ;; (defr components
-;;   [(text-input testtext ~(text-key-handler 'testtext 'testcursor) testcursor)])
+;;   (vertical-layout
+;;    (text-area testtext ~(text-key-handler 'testtext 'testcursor) testcursor)
+;;    (text-input testtext2 ~(key-handler 'testtext2))))
 ;; (defr event-handlers (make-event-handlers components))
 
 
