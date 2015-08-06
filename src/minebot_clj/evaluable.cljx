@@ -75,7 +75,10 @@
     (pr-str fn))
   (-evaluate [this env]
     (let [args (map #(get env %) arg-deps)]
-      (apply fn args))))
+      (apply fn args)))
+  Dependable
+  (dependencies [this]
+    arg-deps))
 
 (defn fn-evaluable [fn arg-deps]
   (FnEvaluable. fn arg-deps))

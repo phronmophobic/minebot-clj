@@ -43,7 +43,7 @@
     :key-repeater (run-key-repeater
                    (let [myapp (app/app)]
                      (fn [key]
-                       (event/publish! myapp :key-press key)
+                       ;; (event/publish! myapp :key-press key)
                        )))))
 
 (defn reshape [[x y width height] state]
