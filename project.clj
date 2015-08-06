@@ -11,6 +11,8 @@
                  [org.apache.commons/commons-io "1.3.2"]
                  [org.clojure/core.cache "0.6.3"]
 
+                 [seesaw "1.4.5"]
+
                  ;; update to the latest core async version
                  ;; that i couldn't find on clojars.
                  ;; no actual changes of my own. will replace
